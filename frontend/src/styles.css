@@ -94,3 +94,20 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 
 .pickup-lookup{margin:14px 0 20px;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,1fr);gap:12px 20px;align-items:center;border:1px solid #e3e8ed;border-radius:12px;background:#fff}.pickup-lookup h3{margin:4px 0;font-size:18px}.pickup-lookup p{margin:4px 0;color:#718096;font-size:12px}.pickup-lookup form{display:grid;gap:7px}.pickup-lookup form>div{display:flex;gap:8px}.pickup-lookup input{min-width:0;flex:1;padding:10px 12px;border:1px solid #d9e0e7;border-radius:6px}.pickup-match,.pickup-not-found{grid-column:1/-1;display:grid;gap:7px;padding:12px;border-radius:8px;background:#f2f6fa}.pickup-match span{font-size:13px}.pickup-match small{color:#718096}.pickup-match .blue-button{justify-self:start}.pickup-not-found{color:#923d35}:root[data-theme="dark"] .pickup-lookup{background:#142337;border-color:#2f4258;color:#e7edf5}:root[data-theme="dark"] .pickup-lookup p,:root[data-theme="dark"] .pickup-match small{color:#b9c7d6}:root[data-theme="dark"] .pickup-match{background:#0c1a2a}
 @media(max-width:680px){.pickup-lookup{grid-template-columns:1fr;padding:13px}.pickup-lookup form>div{flex-direction:column}.pickup-lookup form .blue-button{width:100%}.pickup-match,.pickup-not-found{grid-column:auto}.pickup-match .blue-button{width:100%}}
+
+/* Keep order cards readable in both themes and at narrow dashboard widths. */
+.queue-item{color:#102b4c}
+.queue-number{color:#102b4c;font-size:15px;line-height:1.35}
+.queue-number small{display:block;margin-top:3px;color:#50647b;font-size:10px;letter-spacing:0}
+.queue-details>div b{color:#102b4c;font-size:12px}
+.queue-details>div small{color:#4e6177;font-size:11px;line-height:1.45}
+.queue-details p{color:#344b63;font-size:12px;line-height:1.5}
+.queue-details p span{padding:3px 7px;border-radius:4px;background:#f0f4f8}
+.queue-amount{color:#102b4c;font-size:13px}
+.queue-student-id{background:#fff0b4;color:#102b4c!important}
+:root[data-theme="dark"] .queue-item{color:#edf3f9}
+:root[data-theme="dark"] .queue-number,:root[data-theme="dark"] .queue-details>div b,:root[data-theme="dark"] .queue-amount{color:#f1f5fa}
+:root[data-theme="dark"] .queue-number small,:root[data-theme="dark"] .queue-details>div small{color:#c4d1df}
+:root[data-theme="dark"] .queue-details p{color:#e0e8f1}
+:root[data-theme="dark"] .queue-details p span{background:#20334a}
+:root[data-theme="dark"] .queue-student-id{background:#3d3520;color:#ffe08a!important}
