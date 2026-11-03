@@ -112,6 +112,13 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 :root[data-theme="dark"] .queue-details p span{background:#20334a}
 :root[data-theme="dark"] .queue-student-id{background:#3d3520;color:#ffe08a!important}
 .menu-admin-row{grid-template-columns:minmax(0,1fr) minmax(110px,140px) 120px}
+
+/* Keep pickup codes in their own grid track so they cannot collide with status text. */
+.queue-item{grid-template-columns:minmax(96px,auto) minmax(0,1fr) auto auto;gap:12px}
+.queue-number{min-width:0;overflow-wrap:anywhere;letter-spacing:.02em}
+.queue-details{min-width:0}
+.queue-details>div{flex-wrap:wrap;align-items:flex-start;gap:4px 8px}
+@media(max-width:680px){.queue-item{grid-template-columns:minmax(88px,auto) minmax(0,1fr);gap:9px}.queue-number{font-size:13px}.queue-amount{grid-column:1}.queue-action{grid-column:2;justify-self:start}}
 .menu-admin-row .availability-switch{width:116px;min-width:116px;min-height:34px;flex:none}
 .menu-admin-row .availability-switch small{min-width:68px;white-space:nowrap}
 @media(max-width:680px){.menu-admin-row{grid-template-columns:minmax(0,1fr) minmax(100px,125px)}.menu-admin-row .availability-switch{grid-column:1/-1;width:116px;min-width:116px;padding:0 0 6px 43px}}
