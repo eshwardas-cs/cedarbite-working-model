@@ -3,12 +3,20 @@
 The public storefront submits pickup orders to the Netlify Function in
 `frontend/netlify/functions/shared-data.mjs`. The function stores each order
 and menu-availability change in the site-wide `cedarbite-shared-pilot` Netlify
-Blobs store. The canteen dashboard refreshes the queue every five seconds.
+Blobs store. The canteen dashboard refreshes the queue every two seconds and
+only loads active orders, so completed orders do not slow later refreshes.
+Pending orders saved by the previous queue format are migrated the first time
+the updated dashboard reads the queue. A collected order is removed from the
+active queue.
 
-The public endpoint can create an order and read menu availability. Reading the
-shared queue, changing order status, and changing item availability require the
-canteen password. Student IDs are returned only in that manager-authenticated
-queue response.
+The same store keeps the menu catalogue and menu-availability overrides.
+An open student menu refreshes shared menu changes every five seconds; deal
+presentation settings remain local to each browser.
+
+The public endpoint can create an order and read the menu and availability.
+Reading the shared queue, changing order status, changing the menu, and changing
+item availability require the canteen password. Student IDs are returned only
+in that manager-authenticated queue response.
 
 ## Configure the canteen password
 
@@ -35,6 +43,5 @@ site over HTTPS.
   are in place.
 - The Netlify Blobs store is a small pilot store, not a replacement for the
   existing FastAPI/Postgres backend for an approved production service.
-- The current store keeps orders until the project operator clears them from
-  Netlify Blobs. Establish and implement an approved retention period before
-  collecting real student records.
+- Active queue entries are removed when an order is marked collected. Establish
+  an approved retention period before collecting real student records.
