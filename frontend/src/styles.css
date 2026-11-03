@@ -122,3 +122,16 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 .menu-admin-row .availability-switch{width:116px;min-width:116px;min-height:34px;flex:none}
 .menu-admin-row .availability-switch small{min-width:68px;white-space:nowrap}
 @media(max-width:680px){.menu-admin-row{grid-template-columns:minmax(0,1fr) minmax(100px,125px)}.menu-admin-row .availability-switch{grid-column:1/-1;width:116px;min-width:116px;padding:0 0 6px 43px}}
+
+.order-confirmation-scrim{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:20px;background:#07172dcc;backdrop-filter:blur(4px)}
+.order-confirmation{width:min(100%,430px);padding:34px;border:1px solid #e7ebf0;border-radius:12px;background:#fff;color:var(--navy);text-align:center;box-shadow:0 24px 70px #06182b55}
+.confirmation-check{width:52px;height:52px;margin:0 auto 16px;display:grid;place-items:center;border-radius:50%;background:#e4f6ed;color:#16734c;font-size:28px;font-weight:800}
+.order-confirmation h2{margin:10px 0;font-family:Manrope,sans-serif;font-size:25px;line-height:1.2}
+.order-confirmation>p{margin:0;color:#617187;font-size:14px;line-height:1.6}
+.confirmation-pickup{margin:22px 0;padding:16px;border:1px dashed #d2ad3c;border-radius:8px;background:#fff9e6}
+.confirmation-pickup small{display:block;color:#826300;font-size:10px;font-weight:800;letter-spacing:.14em}
+.confirmation-pickup strong{display:block;margin-top:6px;color:var(--navy);font-size:32px;letter-spacing:.12em}
+.order-confirmation>.blue-button{width:100%;border-radius:6px}
+:root[data-theme="dark"] .order-confirmation{border-color:#34465d;background:#142337;color:#f1f5fa}
+:root[data-theme="dark"] .order-confirmation>p{color:#c4d1df}
+@media(max-width:480px){.order-confirmation{padding:26px 20px}.order-confirmation h2{font-size:22px}.confirmation-pickup strong{font-size:28px}}
