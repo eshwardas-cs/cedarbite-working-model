@@ -2,6 +2,9 @@
   command = "npm --prefix frontend ci && npm --prefix frontend run build"
   publish = "backend/app/web"
 
+[functions]
+  directory = "frontend/netlify/functions"
+
 [[redirects]]
   from = "/owner"
   to = "/index.html"
