@@ -1,0 +1,61 @@
+services:
+  database:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cedarbite
+      POSTGRES_USER: cedarbite
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your deployment environment}
+    volumes:
+      - cedarbite-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cedarbite -d cedarbite"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      CEDARBITE_ENV: production
+      DATABASE_URL: postgresql+psycopg://cedarbite:${POSTGRES_PASSWORD}@database:5432/cedarbite
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in your deployment environment}
+      ALLOWED_EMAIL_DOMAIN: cedar.edu.pk
+      PUBLIC_BASE_URL: https://${PUBLIC_HOST:?Set PUBLIC_HOST to your approved domain}
+      PAYMENT_PROVIDER: none
+      EMAIL_BACKEND: smtp
+      SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST for verification email}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:?Set SMTP_USERNAME for verification email}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?Set SMTP_PASSWORD for verification email}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?Set SMTP_FROM_EMAIL for verification email}
+      SMTP_STARTTLS: "true"
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    expose:
+      - "8000"
+    depends_on:
+      database:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set PUBLIC_HOST to your approved domain}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  cedarbite-data:
+  caddy-data:
+  caddy-config:

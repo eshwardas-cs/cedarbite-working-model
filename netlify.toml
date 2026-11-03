@@ -1,0 +1,28 @@
+[build]
+  command = "npm --prefix frontend ci && npm --prefix frontend run build"
+  publish = "backend/app/web"
+
+[[redirects]]
+  from = "/owner"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/my-orders"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/about"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/privacy-policy"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/contact-us"
+  to = "/index.html"
+  status = 200

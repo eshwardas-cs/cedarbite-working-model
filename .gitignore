@@ -1,0 +1,13 @@
+.env
+**/.env*
+*.env
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+*.sqlite3
+*.db
+*.egg-info/
+*.tsbuildinfo
+.pytest_cache/

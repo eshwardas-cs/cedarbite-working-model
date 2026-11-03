@@ -1,0 +1,16 @@
+# Local development only. Start with:
+# docker compose -f compose.yaml -f compose.local.yaml up --build -d database app
+services:
+  app:
+    environment:
+      CEDARBITE_ENV: development
+      PAYMENT_PROVIDER: none
+      EMAIL_BACKEND: console
+      PUBLIC_BASE_URL: http://localhost:8082
+      SMTP_HOST: ""
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM_EMAIL: ""
+    ports:
+      - "127.0.0.1:8082:8000"
+
