@@ -16,6 +16,11 @@
   status = 200
 
 [[redirects]]
+  from = "/order-confirmation"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
   from = "/about"
   to = "/index.html"
   status = 200
