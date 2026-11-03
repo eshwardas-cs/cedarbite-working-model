@@ -269,7 +269,7 @@ export default function App() {
     if (!email.endsWith("@cedar.edu.pk")) { setToast("Use a Cedar College email ending in @cedar.edu.pk."); return; }
     const localPart = email.split("@")[0];
     const demoUser: User = { email, role, email_verified: true, student_id: /^\d+$/.test(localPart) ? localPart : null, permissions: role === "DEMO_CANTEEN" ? ["orders.view_own", "queue.view", "menu.manage", "availability.toggle"] : ["orders.view_own"], csrf_token: "demo-local" };
-    localStorage.setItem(DEMO_USER_KEY, JSON.stringify(demoUser)); setUser(demoUser); setCsrf(demoUser.csrf_token); loginDialog.current?.close(); if (role === "DEMO_STUDENT") { try { const saved = JSON.parse(localStorage.getItem(walletKey(email)) || "null"); setWalletBalance(saved?.balance ?? 0); setWalletEntries(saved?.entries ?? []); } catch { setWalletBalance(0); setWalletEntries([]); } } setToast(role === "DEMO_CANTEEN" ? "Canteen workspace opened." : "Presentation profile opened. No Google credentials were used.");
+    localStorage.setItem(DEMO_USER_KEY, JSON.stringify(demoUser)); setUser(demoUser); setCsrf(demoUser.csrf_token); loginDialog.current?.close(); if (role === "DEMO_STUDENT") { try { const saved = JSON.parse(localStorage.getItem(walletKey(email)) || "null"); setWalletBalance(saved?.balance ?? 0); setWalletEntries(saved?.entries ?? []); } catch { setWalletBalance(0); setWalletEntries([]); } setToast(""); } else setToast("Canteen workspace opened.");
   }
   async function demoStaffSignIn(username: string, password: string) {
     try {
