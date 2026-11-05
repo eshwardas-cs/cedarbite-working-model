@@ -304,6 +304,20 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 :root[data-theme="dark"] .menu-admin-row:has(.menu-drag-handle):hover{background:#192b40}
 @media(max-width:680px){.menu-sort-controls{gap:1px}.menu-drag-handle{width:26px;height:34px}.menu-sort-arrows button{height:19px}}
 
+/* Raise muted labels to readable contrast on every dark staff screen. */
+:root[data-theme="dark"] .owner-banner span{color:#d2c7ad}
+:root[data-theme="dark"] .metric-grid article>span,:root[data-theme="dark"] .metric-grid article>small,:root[data-theme="dark"] .queue-live,:root[data-theme="dark"] .panel-empty{color:#c2cedb}
+:root[data-theme="dark"] .mini-menu-row small,:root[data-theme="dark"] .deal-admin-row small,:root[data-theme="dark"] .menu-admin-name small,:root[data-theme="dark"] .availability-switch small{color:#c0ccda}
+:root[data-theme="dark"] .panel-heading>button,:root[data-theme="dark"] .price-edit span{color:#ffe08a}
+:root[data-theme="dark"] .owner-app .owner-form>label,:root[data-theme="dark"] .owner-app .check-row label,:root[data-theme="dark"] .staff-password-panel .owner-form>label{color:#d2dce7}
+:root[data-theme="dark"] .owner-app .owner-form label>small{color:#bac7d5}
+:root[data-theme="dark"] .owner-app .form-message,:root[data-theme="dark"] .staff-password-panel .form-message{color:#9ce5bb}
+:root[data-theme="dark"] .owner-lock>p,:root[data-theme="dark"] .owner-lock>small,:root[data-theme="dark"] .owner-lock .password-help,:root[data-theme="dark"] .owner-lock .demo-signin-form label,:root[data-theme="dark"] .owner-lock .demo-signin-form small{color:#c4d0de}
+:root[data-theme="dark"] .owner-lock .back-to-store{color:#c4d0de}
+:root[data-theme="dark"] .stations-page .form-message{color:#9ce5bb}
+:root[data-theme="dark"] .stations-page .error-message{color:#ffb9b2!important}
+:root[data-theme="dark"] .kitchen-screen .staff-password-panel summary,:root[data-theme="dark"] .kitchen-screen .staff-password-panel p,:root[data-theme="dark"] .kitchen-screen .staff-password-panel code{color:#e7edf5}
+
 /* Keep every staff station readable when the shared theme is dark. */
 :root[data-theme="dark"] .stations-page{color:#e7edf5}
 :root[data-theme="dark"] .stations-page>h1,:root[data-theme="dark"] .stations-page h2{color:#f1f5fa}
