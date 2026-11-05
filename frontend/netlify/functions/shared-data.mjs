@@ -58,7 +58,18 @@ async function passwordMatches(station, candidate) {
   if (saved?.salt && saved?.hash) {
     const actual = scryptSync(candidate, Buffer.from(saved.salt, "base64"), 64);
     const expected = Buffer.from(saved.hash, "base64");
-    return expected.length === actual.length && timingSafeEqual(actual, expected);
+    if (expected.length === actual.length && timingSafeEqual(actual, expected)) return true;
+
+    // Netlify environment values are the recovery source when a station's
+    // saved reset password is stale. Clear that override after a successful
+    // recovery so the old saved password stops working.
+    const environmentPassword = config.password();
+    if (environmentPassword && safeEqual(candidate, environmentPassword)) {
+      try { await store.delete(`staff-passwords/${station}`); }
+      catch (error) { console.error("CedarBite could not clear a recovered station password override.", { station, error }); }
+      return true;
+    }
+    return false;
   }
   return Boolean(config.password()?.trim() && safeEqual(candidate, config.password()));
 }
