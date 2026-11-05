@@ -270,3 +270,11 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 :root[data-theme="dark"] .menu-remove-confirm>span b{color:#fff0ef}
 :root[data-theme="dark"] .menu-remove-cancel{border-color:#40546b;background:#1c3045;color:#d7e2ee}
 @media(max-width:680px){.menu-admin-row{grid-template-columns:minmax(0,1fr) minmax(96px,120px);gap:7px}.menu-admin-row .price-edit{grid-column:1/-1;width:min(100%,220px)}.menu-admin-row .availability-switch{grid-column:1/-1;width:min(100%,250px);min-width:0}.menu-admin-row .menu-remove-trigger{grid-column:1/-1;width:min(100%,120px)}.menu-remove-confirm{grid-column:1/-1;justify-content:flex-start}.menu-remove-confirm>span{width:100%}}
+
+
+.quick-hours-note{grid-column:1/-1;margin:4px 0 0;color:#697b90;font-size:10px;line-height:1.5}
+.quick-hours-note:not(:empty){font-weight:650}
+.mode-choice button:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
+.order-hours-message{margin:0;color:#9a4b37;font-size:11px;line-height:1.5}
+:root[data-theme="dark"] .quick-hours-note{color:#b6c5d5}
+:root[data-theme="dark"] .order-hours-message{color:#ffbbaa}
