@@ -601,14 +601,14 @@ function GoogleIcon() { return <svg viewBox="0 0 48 48" aria-hidden="true"><path
 
 function TeamPage() {
   const members = [
-    { name: "Eshwar Das", initials: "ED", description: "Lead Developer for CedarBite, working with the team on the campus ordering experience." },
-    { name: "Muhammad Eyad Imran", initials: "ME", description: "Collaborating with the team to shape CedarBite’s campus canteen ordering experience." },
-    { name: "Mudassir", initials: "M", description: "Working alongside the student team as CedarBite’s campus ordering idea develops." },
-    { name: "Rayan", initials: "R", description: "Contributing to the shared goal of making campus ordering and collection more convenient." },
+    { name: "Eshwar Das", initials: "ED", role: "LEAD DEVELOPER", description: "Lead Developer for CedarBite, working with the team on the campus ordering experience." },
+    { name: "Muhammad Eyad Imran", initials: "ME", role: "BACKEND DEVELOPER · SAMPLE ROLE", description: "Collaborating on the data and shared order experience for CedarBite." },
+    { name: "Mudassir", initials: "M", role: "FRONTEND DEVELOPER · SAMPLE ROLE", description: "Helping shape the student and canteen interfaces as CedarBite develops." },
+    { name: "Rayan", initials: "R", role: "PRODUCT & TESTING · SAMPLE ROLE", description: "Exploring the student and staff experience and helping review the ordering flow." },
   ];
   return <main className="team-page">
     <section className="team-hero"><span className="section-kicker">THE PEOPLE BEHIND THE PROJECT</span><h1>Four students.<br/><span>One shared idea.</span></h1><p>CedarBite is being shaped by a student team exploring a smoother way to order and collect food on campus.</p><div className="team-hero-orbit" aria-hidden="true"><span><CedarMark/></span><i/><b/></div></section>
-    <section className="team-roster" aria-labelledby="team-roster-title"><div className="team-section-heading"><div><span className="section-kicker">MEET THE TEAM</span><h2 id="team-roster-title">Built together at Cedar.</h2></div><span className="team-count">04 <small>COLLABORATORS</small></span></div><div className="team-member-list">{members.map((member, index) => <article className="team-member-row" key={member.name} style={{ "--team-index": index } as React.CSSProperties}><div className="team-member-visual"><div className="team-member-orbit" aria-hidden="true"><i/></div><div className="team-member-avatar" role="img" aria-label={`${member.initials} initials portrait for ${member.name}`}><span>{member.initials}</span></div><span className="team-member-index">0{index + 1}</span></div><div className="team-member-copy"><span className="team-role">CEDARBITE TEAM</span><h3>{member.name}</h3><p>{member.description}</p></div><span className="team-row-arrow" aria-hidden="true">↗</span></article>)}</div></section>
+    <section className="team-roster" aria-labelledby="team-roster-title"><div className="team-section-heading"><div><span className="section-kicker">MEET THE TEAM</span><h2 id="team-roster-title">Built together at Cedar.</h2></div><span className="team-count">04 <small>COLLABORATORS</small></span></div><div className="team-member-list">{members.map((member, index) => <article className="team-member-row" key={member.name} style={{ "--team-index": index } as React.CSSProperties}><div className="team-member-visual"><div className="team-member-orbit" aria-hidden="true"><i/></div><div className="team-member-avatar" role="img" aria-label={`${member.initials} initials portrait for ${member.name}`}><span>{member.initials}</span></div><span className="team-member-index">0{index + 1}</span></div><div className="team-member-copy"><span className="team-role">{member.role}</span><h3>{member.name}</h3><p>{member.description}</p></div><span className="team-row-arrow" aria-hidden="true">↗</span></article>)}</div></section>
   </main>;
 }
 
