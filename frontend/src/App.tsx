@@ -98,6 +98,7 @@ export default function App() {
   const [itemAddPending, setItemAddPending] = useState(false);
   const availabilityPendingRef = useRef(new Set<number>());
   const availabilityVersionRef = useRef(new Map<number, number>());
+  const menuRevisionRef = useRef(0);
   const orderSubmittingRef = useRef(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [showOrderConfirmation, setShowOrderConfirmation] = useState(false);
@@ -170,6 +171,9 @@ export default function App() {
   }, [request]);
 
   const loadSharedAvailability = useCallback(async () => {
+    // This endpoint backs the shared Netlify presentation model only. Real
+    // accounts use the API menu as their single source of truth.
+    if (user?.role !== "DEMO_CANTEEN" && user?.role !== "DEMO_STUDENT") return;
     const versionsAtRequest = new Map(availabilityVersionRef.current);
     const pendingAtRequest = new Set(availabilityPendingRef.current);
     try {
@@ -180,13 +184,14 @@ export default function App() {
         return { ...item, available: result.availability[String(id)] ?? item.available };
       }) })));
     } catch { /* The static menu remains usable if shared availability is temporarily unavailable. */ }
-  }, [request]);
+  }, [request, user?.role]);
 
   const loadMenu = useCallback(async (manage = false) => {
+    const revisionAtStart = menuRevisionRef.current;
     if (user?.role.startsWith("DEMO_")) {
       try {
         const shared = await request<{ categories: Category[] | null }>(`${SHARED_DATA_URL}?scope=menu`, { cache: "no-store" });
-        if (shared.categories?.length) {
+        if (shared.categories?.length && revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
           setCategories(shared.categories);
           localStorage.setItem("cedarbite-demo-menu", JSON.stringify(shared.categories));
           setMenuError("");
@@ -194,12 +199,13 @@ export default function App() {
           return;
         }
       } catch { /* Continue with the saved or built-in menu if shared storage is unavailable. */ }
+      if (revisionAtStart !== menuRevisionRef.current || availabilityPendingRef.current.size > 0) return;
       const saved = localStorage.getItem("cedarbite-demo-menu");
       if (saved) { try { setCategories(JSON.parse(saved) as Category[]); setMenuError(""); void loadSharedAvailability(); } catch { localStorage.removeItem("cedarbite-demo-menu"); } return; }
       if (user.role === "DEMO_CANTEEN") { setCategories(sampleMenu); void loadSharedAvailability(); return; }
     }
-    try { const result = await request<{ categories: Category[] }>(manage ? "/api/menu/manage" : "/api/menu"); setCategories(result.categories); setMenuError(""); void loadSharedAvailability(); }
-    catch { setCategories(sampleMenu); setMenuError(""); void loadSharedAvailability(); }
+    try { const result = await request<{ categories: Category[] }>(manage ? "/api/menu/manage" : "/api/menu"); if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) { setCategories(result.categories); setMenuError(""); } }
+    catch { if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) { setCategories(sampleMenu); setMenuError(""); } }
   }, [loadSharedAvailability, request, user]);
   const loadQueue = useCallback(async () => {
     if (canteenStation === "order_taker") return;
@@ -323,13 +329,17 @@ export default function App() {
   }, [loadQueue, page, user?.role]);
   useEffect(() => {
     if (page !== "menu" && !(["owner", "order-manager", "cashdesk", "kitchen"] as Page[]).includes(page)) return;
-    void loadSharedAvailability();
+    const refreshAvailability = () => {
+      if (user?.role === "DEMO_CANTEEN") void loadSharedAvailability();
+      else if (user?.role === "DEMO_STUDENT") void loadMenu();
+      else void loadMenu(Boolean(user?.permissions.includes("menu.manage") || user?.permissions.includes("availability.toggle")));
+    };
+    refreshAvailability();
     const timer = window.setInterval(() => {
-      if (user?.role === "DEMO_STUDENT") void loadMenu();
-      else void loadSharedAvailability();
+      if (!document.hidden) refreshAvailability();
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [loadMenu, loadSharedAvailability, page, user?.role]);
+  }, [loadMenu, loadSharedAvailability, page, user]);
 
   const canManage = user?.permissions.includes("menu.manage") ?? false;
   const canToggle = user?.permissions.includes("availability.toggle") ?? false;
@@ -529,6 +539,7 @@ export default function App() {
       if (availabilityPendingRef.current.has(item.id)) return;
       const previousAvailable = categories.flatMap((category) => category.items).find((entry) => entry.id === item.id)?.available ?? item.available;
       const available = !previousAvailable;
+      menuRevisionRef.current += 1;
       availabilityPendingRef.current.add(item.id);
       availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
       setAvailabilityPending((current) => [...current, item.id]);
@@ -540,6 +551,7 @@ export default function App() {
       } catch (error) {
         setToast(error instanceof Error ? error.message : "Availability could not be saved.");
       } finally {
+        menuRevisionRef.current += 1;
         availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
         availabilityPendingRef.current.delete(item.id);
         setAvailabilityPending((current) => current.filter((id) => id !== item.id));
@@ -547,14 +559,25 @@ export default function App() {
       }
       return;
     }
+    if (availabilityPendingRef.current.has(item.id)) return;
+    const currentAvailable = categories.flatMap((category) => category.items).find((entry) => entry.id === item.id)?.available ?? item.available;
+    availabilityPendingRef.current.add(item.id);
+    setAvailabilityPending((current) => [...current, item.id]);
+    menuRevisionRef.current += 1;
     try {
-      const result = await request<{ is_available?: boolean; available?: boolean }>(`/api/menu/items/${item.id}/availability`, { method: "PATCH", body: JSON.stringify({ is_available: !item.available }) });
+      const result = await request<{ is_available?: boolean; available?: boolean }>(`/api/menu/items/${item.id}/availability`, { method: "PATCH", body: JSON.stringify({ is_available: !currentAvailable }) });
       const saved = result.is_available ?? result.available;
       if (typeof saved !== "boolean") throw new Error("The canteen did not confirm this availability change.");
       setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, available: saved } : entry) })));
       setToast(`${item.name} is now ${saved ? "available" : "unavailable"}.`);
     }
     catch (error) { setToast(error instanceof Error ? error.message : "Could not update availability."); }
+    finally {
+      menuRevisionRef.current += 1;
+      availabilityPendingRef.current.delete(item.id);
+      setAvailabilityPending((current) => current.filter((id) => id !== item.id));
+      void loadMenu(true);
+    }
   }
   async function changePrice(item: Item, form: HTMLFormElement) {
     const price = Number(new FormData(form).get("price"));
@@ -714,7 +737,7 @@ export default function App() {
     const result = await request<{ order: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "create-counter-order", order }) });
     return result.order;
   }}/>
-  if (["owner", "order-manager", "cashdesk"].includes(page)) return <OwnerApp station={page === "cashdesk" ? "cashier" : "order_manager"} user={user} googleReady={googleReady} categories={categories} items={items} queue={queue} orderHistory={orderHistory} walletTopUpHistory={walletTopUpHistory} walletHistoryError={walletHistoryError} walletHistoryLoading={walletHistoryLoading} onLoadHistory={() => void loadOrderHistory()} onLoadWalletTopUpHistory={() => void loadWalletTopUpHistory()} queuePendingIds={queuePendingIds} deals={deals} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} canManage={canManage} canToggle={canToggle} availabilityPending={availabilityPending} menuMutationPending={menuMutationPending} itemAddPending={itemAddPending} canQueue={canQueue} canTopUp={user?.permissions.includes("wallet.cash_topup") ?? false} walletMessage={walletMessage} walletPending={cashTopUpPending} onCashTopUp={cashWalletTopUp} itemMessage={itemMessage} dealMessage={dealMessage} onSignIn={startSignIn} onDemoStaff={(username, password, station) => demoStaffSignIn(username, password, station)} onSignOut={() => void signOut()} onBack={() => navigate("menu")} onToggle={toggleAvailability} onPrice={(item, form) => void changePrice(item, form)} onAddCategory={(form) => void addCategory(form)} onAddItem={(event) => void addItem(event)} onAdvance={(order) => void advanceOrder(order)} onMarkCashPaid={markCashPaid} onChangePassword={changeStaffPassword} onResetPassword={resetStaffPassword} onToggleOrdering={() => void toggleOrdering()} onDeal={saveDeal} onDealToggle={(id) => setDeals((current) => current.map((deal) => deal.id === id ? { ...deal, active: !deal.active } : deal))} onRefresh={() => { void loadMenu(true); void loadQueue(); void loadOrderHistory(); void loadWalletTopUpHistory(); void loadWallet(); void loadSharedAvailability(); }} orderingReason={orderingReason} />;
+  if (["owner", "order-manager", "cashdesk"].includes(page)) return <OwnerApp station={page === "cashdesk" ? "cashier" : "order_manager"} user={user} googleReady={googleReady} categories={categories} items={items} queue={queue} orderHistory={orderHistory} walletTopUpHistory={walletTopUpHistory} walletHistoryError={walletHistoryError} walletHistoryLoading={walletHistoryLoading} onLoadHistory={() => void loadOrderHistory()} onLoadWalletTopUpHistory={() => void loadWalletTopUpHistory()} queuePendingIds={queuePendingIds} deals={deals} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} canManage={canManage} canToggle={canToggle} availabilityPending={availabilityPending} menuMutationPending={menuMutationPending} itemAddPending={itemAddPending} canQueue={canQueue} canTopUp={user?.permissions.includes("wallet.cash_topup") ?? false} walletMessage={walletMessage} walletPending={cashTopUpPending} onCashTopUp={cashWalletTopUp} itemMessage={itemMessage} dealMessage={dealMessage} onSignIn={startSignIn} onDemoStaff={(username, password, station) => demoStaffSignIn(username, password, station)} onSignOut={() => void signOut()} onBack={() => navigate("menu")} onToggle={toggleAvailability} onPrice={(item, form) => void changePrice(item, form)} onAddCategory={(form) => void addCategory(form)} onAddItem={(event) => void addItem(event)} onAdvance={(order) => void advanceOrder(order)} onMarkCashPaid={markCashPaid} onChangePassword={changeStaffPassword} onResetPassword={resetStaffPassword} onToggleOrdering={() => void toggleOrdering()} onDeal={saveDeal} onDealToggle={(id) => setDeals((current) => current.map((deal) => deal.id === id ? { ...deal, active: !deal.active } : deal))} onRefresh={() => { void loadMenu(user?.role !== "DEMO_CANTEEN"); void loadQueue(); void loadOrderHistory(); void loadWalletTopUpHistory(); void loadWallet(); if (user?.role === "DEMO_CANTEEN") void loadSharedAvailability(); }} orderingReason={orderingReason} />;
   if (page === "kitchen") return <KitchenStation user={user} queue={queue} pendingIds={queuePendingIds} onSignIn={(username, password) => demoStaffSignIn(username, password, "kitchen")} onSignOut={() => void signOut()} onChangePassword={changeStaffPassword}/>;
   if (page === "confirmation") return <main className="order-confirmation-page"><section className="order-confirmation-page-card"><div className="confirmation-check" aria-hidden="true">✓</div><span className="section-kicker">ORDER CONFIRMED</span><h1>Your order was placed successfully.</h1><div className="confirmation-pickup"><small>PICKUP NUMBER</small><strong>{orderConfirmation?.pickup_code ?? "—"}</strong></div><button className="blue-button" onClick={() => navigate("menu")}>← Return to menu</button></section></main>;
 
