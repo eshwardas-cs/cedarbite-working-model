@@ -279,6 +279,14 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 :root[data-theme="dark"] .quick-hours-note{color:#b6c5d5}
 :root[data-theme="dark"] .order-hours-message{color:#ffbbaa}
 
+.queue-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}
+.queue-delete-button{width:36px;height:36px;flex:none;display:grid;place-items:center;border:1px solid #e8caca;border-radius:7px;background:#fff8f7;color:#a53b35;transition:background .15s,border-color .15s,transform .15s}
+.queue-delete-button:hover:not(:disabled){transform:translateY(-1px);background:#ffe9e7;border-color:#d89995}
+.queue-delete-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+:root[data-theme="dark"] .queue-delete-button{border-color:#704444;background:#321f22;color:#ffd1ce}
+:root[data-theme="dark"] .queue-delete-button:hover:not(:disabled){background:#482726;border-color:#9c5a55}
+@media(max-width:680px){.queue-actions{grid-column:2;justify-content:flex-start}.queue-delete-button{width:40px;height:40px}}
+
 /* Keep every staff station readable when the shared theme is dark. */
 :root[data-theme="dark"] .stations-page{color:#e7edf5}
 :root[data-theme="dark"] .stations-page>h1,:root[data-theme="dark"] .stations-page h2{color:#f1f5fa}
