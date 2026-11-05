@@ -31,6 +31,8 @@ TRANSITIONS: dict[tuple[S, S], set[str]] = {
     (S.AWAITING_PAYMENT, S.CANCELLED): {"student", "manager", "owner"},
     (S.PAYMENT_FAILED, S.CANCELLED): {"student", "manager", "owner", "system"},
     (S.SUBMITTED, S.ACCEPTED): {"staff", "manager", "owner"},
+    # The canteen console accepts an order directly into the preparing queue.
+    (S.SUBMITTED, S.PREPARING): {"staff", "manager", "owner"},
     (S.SUBMITTED, S.CANCELLED): {"manager", "owner"},    # triggers refund flow
     (S.ACCEPTED, S.PREPARING): {"staff", "manager", "owner"},
     (S.ACCEPTED, S.CANCELLED): {"manager", "owner"},

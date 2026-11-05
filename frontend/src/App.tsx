@@ -657,10 +657,10 @@ export default function App() {
     const orderId = String(order.id);
     if (queueMutationPendingRef.current.has(orderId)) return;
     queueMutationPendingRef.current.add(orderId);
+    queueRevisionRef.current += 1;
     setQueuePendingIds((current) => [...new Set([...current, orderId])]);
     try {
       if (user?.role === "DEMO_CANTEEN") {
-      queueRevisionRef.current += 1;
         const result = await request<{ order: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "set-status", order_id: orderId, status: next[order.status] }) });
         if (!result.order || result.order.status !== next[order.status]) throw new Error("The canteen did not confirm this order update.");
         queueRevisionRef.current += 1;
@@ -669,15 +669,15 @@ export default function App() {
         setToast(`Order ${order.pickup_code} updated.`);
         return;
       }
-      const result = await request<{ status?: string; order?: Order }>(`/api/orders/${order.id}/status`, { method: "POST", body: JSON.stringify({ to: next[order.status] }) });
-      const updated = result.order;
-      if (updated) setQueue((current) => updated.status === "COLLECTED" ? current.filter((entry) => String(entry.id) !== orderId) : [updated, ...current.filter((entry) => String(entry.id) !== orderId)]);
-      else await loadQueue();
+      const result = await request<Order & { order?: Order }>(`/api/orders/${order.id}/status`, { method: "POST", body: JSON.stringify({ to: next[order.status] }) });
+      const savedOrder = result.order ?? (result.id != null ? result : undefined);
+      if (!savedOrder || savedOrder.status !== next[order.status]) throw new Error("The canteen did not confirm this order update.");
+      const updated = { ...order, ...savedOrder };
+      queueRevisionRef.current += 1;
+      setQueue((current) => updated.status === "COLLECTED" ? current.filter((entry) => String(entry.id) !== orderId) : [updated, ...current.filter((entry) => String(entry.id) !== orderId)]);
       setToast(`Order ${order.pickup_code} updated.`);
     } catch (error) {
-      if (user?.role === "DEMO_CANTEEN") {
-        queueRevisionRef.current += 1;
-      }
+      queueRevisionRef.current += 1;
       setToast(error instanceof Error ? error.message : "Order status was not changed.");
     } finally {
       queueMutationPendingRef.current.delete(orderId);
