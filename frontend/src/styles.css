@@ -359,6 +359,35 @@ img.counter-item-visual{display:block}
 @media(max-width:520px){.counter-item-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.counter-item-picture{height:112px}.counter-item-card-info{padding:9px}.counter-item-card-info>div:first-child b{font-size:11px}.counter-item-card-info>small{min-height:42px;font-size:9px}.counter-quantity-control{gap:5px}.counter-quantity-control button{width:30px;height:32px}.counter-quantity-control input{width:43px}.counter-items-heading h2{font-size:18px}}
 @media(max-width:360px){.counter-item-list{grid-template-columns:1fr}}
 
+/* Password settings open from compact controls beside each station's sign-out button. */
+.staff-password-panel{width:max-content;max-width:100%;margin:0;padding:0;position:relative;border:0;border-radius:0;background:transparent;color:var(--ink,#102b4c)}
+.staff-password-panel>summary{min-height:36px;padding:0 11px;display:flex;align-items:center;list-style:none;border:1px solid #dce4eb;border-radius:7px;background:#fff;color:#173c64;font-size:10px;font-weight:750;cursor:pointer;white-space:nowrap}
+.staff-password-panel>summary::-webkit-details-marker{display:none}
+.staff-password-panel>summary::after{margin-left:8px;content:"⌄";font-size:12px}
+.staff-password-panel[open]>summary{border-color:#d3ad26;background:#fff7d9}
+.staff-password-panel .owner-form,.staff-password-panel>p{width:min(340px,calc(100vw - 28px));max-width:none;margin:8px 0 0;padding:16px;position:absolute;top:100%;right:0;z-index:100;border:1px solid #dce4eb;border-radius:10px;background:#fff;color:#102b4c;box-shadow:0 16px 42px #07182c35}
+.staff-password-panel .owner-form{gap:11px}
+.staff-password-panel>p{font-size:11px;line-height:1.6}
+.owner-top-actions .staff-password-panel{max-width:none}
+.owner-top-actions .staff-password-panel[open]{position:relative;inset:auto;z-index:100;box-shadow:none}
+.station-top-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px}
+.station-top-actions .staff-password-panel{flex:none}
+.station-top-actions>button{min-height:36px;padding:0 11px;border:1px solid #dce4eb;border-radius:7px;background:#fff;color:#173c64;font-size:10px;font-weight:700}
+.kitchen-screen .staff-password-panel{max-width:none;margin:0;background:transparent;border:0;color:#fff}
+.kitchen-screen .staff-password-panel>summary{border-color:#ffffff55;background:#193a5e;color:#fff}
+.kitchen-screen .staff-password-panel[open]>summary{background:#34577b;border-color:#ffffff88}
+.kitchen-screen .staff-password-panel .owner-form,.kitchen-screen .staff-password-panel>p{background:#fff;color:#102b4c;border-color:#dce4eb}
+.kitchen-screen .staff-password-panel .owner-form>label{color:#40556c}
+:root[data-theme="dark"] .staff-password-panel>summary,:root[data-theme="dark"] .station-top-actions>button{border-color:#40546b;background:#1b2e43;color:#e7edf5}
+:root[data-theme="dark"] .staff-password-panel[open]>summary{border-color:#9c8128;background:#3a321b;color:#ffe08a}
+:root[data-theme="dark"] .staff-password-panel .owner-form,:root[data-theme="dark"] .staff-password-panel>p{border-color:#40546b;background:#142337;color:#e7edf5}
+:root[data-theme="dark"] .staff-password-panel .owner-form>label{color:#d2dce7}
+:root[data-theme="dark"] .staff-password-panel .owner-form input{background:#0d1928;color:#f1f5fa}
+:root[data-theme="dark"] .kitchen-screen .staff-password-panel>summary{border-color:#ffffff55;background:#193a5e;color:#fff}
+:root[data-theme="dark"] .kitchen-screen .staff-password-panel .owner-form,:root[data-theme="dark"] .kitchen-screen .staff-password-panel>p{background:#142337;color:#e7edf5;border-color:#40546b}
+:root[data-theme="dark"] .kitchen-screen .staff-password-panel .owner-form>label{color:#d2dce7}
+:root[data-theme="dark"] .kitchen-screen .staff-password-panel .owner-form input{background:#0d1928;color:#f1f5fa}
+
 .receipt-print-root{display:none}
 .receipt-print-button{width:35px;height:35px;flex:none;display:grid;place-items:center;border:1px solid #dce4eb;border-radius:7px;background:#f6f8fb;color:#173c64;font-size:17px}
 .receipt-print-button:hover{border-color:#d1ad24;background:#fff5cf;color:#102b4c}
