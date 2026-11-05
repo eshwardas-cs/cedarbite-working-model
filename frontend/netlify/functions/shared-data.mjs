@@ -70,6 +70,15 @@ async function readByPrefix(prefix) {
   return records.filter(Boolean);
 }
 
+async function readAvailabilityOverrides() {
+  const { blobs } = await store.list({ prefix: "availability/" });
+  const pairs = await Promise.all(blobs.map(async ({ key }) => [
+    key.slice("availability/".length),
+    await store.get(key, { type: "json", consistency: "strong" }),
+  ]));
+  return Object.fromEntries(pairs.filter(([, value]) => typeof value === "boolean"));
+}
+
 async function migrateLegacyQueue() {
   const marker = "meta/active-queue-v1";
   if (await store.get(marker, { type: "json", consistency: "strong" })) return;
@@ -85,16 +94,12 @@ export default async (request) => {
     const url = new URL(request.url);
     if (request.method === "GET") {
       if (url.searchParams.get("scope") === "availability") {
-        const { blobs } = await store.list({ prefix: "availability/" });
-        const pairs = await Promise.all(blobs.map(async ({ key }) => [key.slice("availability/".length), await store.get(key, { type: "json", consistency: "strong" })]));
-        return reply({ availability: Object.fromEntries(pairs.filter(([, value]) => typeof value === "boolean")) });
+        return reply({ availability: await readAvailabilityOverrides() });
       }
       if (url.searchParams.get("scope") === "menu") {
         const menu = await store.get("menu/catalog", { type: "json", consistency: "strong" });
         if (!Array.isArray(menu?.categories)) return reply({ categories: null });
-        const { blobs } = await store.list({ prefix: "availability/" });
-        const pairs = await Promise.all(blobs.map(async ({ key }) => [key.slice("availability/".length), await store.get(key, { type: "json", consistency: "strong" })]));
-        const availability = Object.fromEntries(pairs.filter(([, value]) => typeof value === "boolean"));
+        const availability = await readAvailabilityOverrides();
         const categories = menu.categories.map((category) => ({ ...category, items: category.items.map((item) => ({ ...item, available: availability[String(item.id)] ?? item.available })) }));
         return reply({ categories });
       }
@@ -165,10 +170,9 @@ export default async (request) => {
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
       if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) return reply({ error: "Order items are invalid." }, 400);
-      for (const item of order.items) {
-        const available = await store.get(`availability/${item.item_id}`, { type: "json", consistency: "strong" });
-        if (available === false) return reply({ error: `${item.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
-      }
+      const availability = await readAvailabilityOverrides();
+      const unavailableItem = order.items.find((item) => availability[String(item.item_id)] === false);
+      if (unavailableItem) return reply({ error: `${unavailableItem.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
       if (order.mode === "SCHEDULED") {
         const activeOrders = await readByPrefix("queue/");
         const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
