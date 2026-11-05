@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
-import { validScheduledPickupWindow } from "./pickup-window-validation.mjs";
+import { validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
   name: "cedarbite-shared-pilot",

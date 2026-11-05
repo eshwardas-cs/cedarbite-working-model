@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validScheduledPickupWindow } from "./pickup-window-validation.mjs";
+import { validScheduledPickupWindow } from "../shared/pickup-window-validation.mjs";
 
 const window = (start, end) => ({ start_at: start, end_at: end });
 
