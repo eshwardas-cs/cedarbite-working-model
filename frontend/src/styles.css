@@ -223,3 +223,22 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 .station-switch-return:hover{text-decoration:underline;color:var(--ink,#102b4c)}
 :root[data-theme="dark"] .station-switch-dialog{--panel:#122338;--ink:#edf4fb;--muted:#afbdcd;--line:#2b3d52}
 @media(max-width:480px){.station-switch-dialog{padding:25px 20px}.station-switch-dialog h2{font-size:23px}}
+
+
+/* High-visibility availability action: the whole control is an easy click target. */
+.availability-switch{box-sizing:border-box;width:100%;min-width:144px;min-height:42px;padding:7px 10px;display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;border:1px solid #b8d8c8;border-radius:8px;background:#edf8f1;color:#176b45;text-align:left;cursor:pointer;transition:background .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease}
+.availability-switch:hover:not(:disabled){background:#ddf1e5;border-color:#82bf9b;box-shadow:0 2px 8px rgba(23,107,69,.12);transform:translateY(-1px)}
+.availability-switch:focus-visible{outline:3px solid #f0c52f;outline-offset:2px}
+.availability-switch>span{width:22px;height:22px;flex:0 0 22px;display:grid;place-items:center;border-radius:50%;background:#218451;color:#fff;font-size:14px;font-weight:800;line-height:1}
+.availability-switch small{min-width:0;color:inherit;font-size:10px;font-weight:750;line-height:1.25;white-space:normal}
+.availability-switch.is-off{border-color:#e6c1bf;background:#fff0ef;color:#9d3d38}
+.availability-switch.is-off>span{background:#bf514a}
+.availability-switch.is-off:hover:not(:disabled){background:#ffe4e2;border-color:#d9938e;box-shadow:0 2px 8px rgba(157,61,56,.12)}
+.availability-switch:disabled{opacity:.78;cursor:wait;transform:none;box-shadow:none}
+.menu-admin-row .availability-switch{width:100%;min-width:144px;min-height:42px;flex:none}
+.menu-admin-row .availability-switch small{min-width:0;white-space:normal}
+@media(max-width:680px){.menu-admin-row .availability-switch{grid-column:1/-1;width:min(100%,250px);min-width:0;padding:8px 10px}}
+:root[data-theme="dark"] .availability-switch{border-color:#37694f;background:#193a2b;color:#c9f2d7}
+:root[data-theme="dark"] .availability-switch.is-off{border-color:#744442;background:#412625;color:#ffd1ce}
+:root[data-theme="dark"] .availability-switch:hover:not(:disabled){background:#214a35}
+:root[data-theme="dark"] .availability-switch.is-off:hover:not(:disabled){background:#512d2b}

@@ -625,48 +625,47 @@ export default function App() {
   }
 
   async function toggleAvailability(item: Item) {
-    if (user?.role === "DEMO_CANTEEN") {
-      if (availabilityPendingRef.current.has(item.id)) return;
-      const previousAvailable = categories.flatMap((category) => category.items).find((entry) => entry.id === item.id)?.available ?? item.available;
-      const available = !previousAvailable;
-      menuRevisionRef.current += 1;
-      availabilityPendingRef.current.add(item.id);
-      availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
-      setAvailabilityPending((current) => [...current, item.id]);
-      try {
-        const result = await request<{ item_id: number; available: boolean }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "set-availability", item_id: item.id, available }) });
-        if (result.item_id !== item.id || typeof result.available !== "boolean") throw new Error("The canteen did not confirm this availability change.");
-        setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, available: result.available } : entry) })));
-        setToast(`${item.name} marked ${available ? "available" : "unavailable"} for everyone.`);
-      } catch (error) {
-        setToast(error instanceof Error ? error.message : "Availability could not be saved.");
-      } finally {
-        menuRevisionRef.current += 1;
-        availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
-        availabilityPendingRef.current.delete(item.id);
-        setAvailabilityPending((current) => current.filter((id) => id !== item.id));
-        void loadSharedAvailability();
-      }
-      return;
-    }
     if (availabilityPendingRef.current.has(item.id)) return;
-    const currentAvailable = categories.flatMap((category) => category.items).find((entry) => entry.id === item.id)?.available ?? item.available;
+    const previousAvailable = categories.flatMap((category) => category.items).find((entry) => entry.id === item.id)?.available ?? item.available;
+    const nextAvailable = !previousAvailable;
+    const updateItem = (available: boolean) => setCategories((current) => current.map((category) => ({
+      ...category,
+      items: category.items.map((entry) => entry.id === item.id ? { ...entry, available } : entry),
+    })));
+
     availabilityPendingRef.current.add(item.id);
-    setAvailabilityPending((current) => [...current, item.id]);
+    availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
     menuRevisionRef.current += 1;
+    setAvailabilityPending((current) => current.includes(item.id) ? current : [...current, item.id]);
+    updateItem(nextAvailable);
+
     try {
-      const result = await request<{ is_available?: boolean; available?: boolean }>(`/api/menu/items/${item.id}/availability`, { method: "PATCH", body: JSON.stringify({ is_available: !currentAvailable }) });
-      const saved = result.is_available ?? result.available;
-      if (typeof saved !== "boolean") throw new Error("The canteen did not confirm this availability change.");
-      setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, available: saved } : entry) })));
-      setToast(`${item.name} is now ${saved ? "available" : "unavailable"}.`);
-    }
-    catch (error) { setToast(error instanceof Error ? error.message : "Could not update availability."); }
-    finally {
+      if (user?.role === "DEMO_CANTEEN") {
+        const result = await request<{ item_id: number; available: boolean }>(SHARED_DATA_URL, {
+          method: "POST",
+          body: JSON.stringify({ action: "set-availability", item_id: item.id, available: nextAvailable }),
+        });
+        if (result.item_id !== item.id || result.available !== nextAvailable) throw new Error("The canteen did not confirm this availability change.");
+        setToast(`${item.name} is now ${nextAvailable ? "available" : "unavailable"} for everyone.`);
+      } else {
+        const result = await request<{ is_available?: boolean; available?: boolean }>(`/api/menu/items/${item.id}/availability`, {
+          method: "PATCH",
+          body: JSON.stringify({ is_available: nextAvailable }),
+        });
+        const saved = result.is_available ?? result.available;
+        if (saved !== nextAvailable) throw new Error("The canteen did not confirm this availability change.");
+        setToast(`${item.name} is now ${nextAvailable ? "available" : "unavailable"}.`);
+      }
+    } catch (error) {
+      updateItem(previousAvailable);
+      setToast(error instanceof Error ? `Could not update ${item.name}: ${error.message}` : `Could not update ${item.name}. Please try again.`);
+    } finally {
       menuRevisionRef.current += 1;
+      availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
       availabilityPendingRef.current.delete(item.id);
       setAvailabilityPending((current) => current.filter((id) => id !== item.id));
-      void loadMenu(true);
+      if (user?.role === "DEMO_CANTEEN") void loadSharedAvailability();
+      else void loadMenu(true);
     }
   }
   async function changePrice(item: Item, form: HTMLFormElement) {
@@ -1014,7 +1013,7 @@ function KitchenStation({ user, queue, pendingIds, onSignIn, onSignOut, onReturn
   return <main className="kitchen-screen"><header><div><span className="section-kicker">CEDARBITE · KITCHEN</span><h1>Preparing now</h1><p>Only orders in the Preparing stage appear here.</p></div>{stationUser && <button onClick={onSignOut}>Sign out</button>}</header>{stationConflict ? <StationSwitchPrompt activeStation={activeStation} activeUser={user} targetStation="kitchen" onSignOut={onSignOut} onReturn={onReturnToActive}/> : !stationUser ? <form className="owner-lock station-login" onSubmit={(event) => { event.preventDefault(); setError(""); void onSignIn(username, password).catch((reason) => setError(reason instanceof Error ? reason.message : "Sign-in failed.")); }}><h2>Kitchen monitor sign-in</h2><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required placeholder="kitchenmonitor" autoComplete="username"/></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} required type="password" autoComplete="current-password"/></label>{error && <p className="form-message error-message">{error}</p>}<button className="blue-button">Open kitchen monitor</button><p className="password-help">Forgot your password? Ask the order manager to reset the kitchen password.</p></form> : <><ChangePasswordForm station="kitchen" onChange={onChangePassword}/>{queue.length ? <div className="kitchen-ticket-grid">{queue.filter((order) => order.status === "PREPARING").map((order) => <article className="kitchen-ticket" key={order.id}><span>PREPARING</span><h2>{order.pickup_code}</h2><small>{order.mode === "SCHEDULED" && order.pickup_window ? new Date(order.pickup_window.start_at).toLocaleTimeString("en-PK", { timeZone: "Asia/Karachi", hour: "numeric", minute: "2-digit" }) : "Quick pickup"}</small><ul>{order.items.map((item, index) => <li key={`${item.name}-${index}`}><b>{item.quantity}×</b> {item.name}</li>)}</ul>{pendingIds.includes(String(order.id)) && <small>Updating…</small>}</article>)}</div> : <div className="kitchen-empty">No orders are being prepared right now.</div>}</>}</main>;
 }
 
-function AvailabilitySwitch({ item, disabled, onToggle }: { item: Item; disabled: boolean; onToggle: (item: Item) => void }) { return <button type="button" className={`availability-switch ${item.available ? "is-on" : ""}`} disabled={disabled} onClick={() => onToggle(item)} aria-label={`${item.available ? "Mark unavailable" : "Mark available"}: ${item.name}`}><span/><small>{disabled ? "Saving…" : item.available ? "Available" : "Unavailable"}</small></button>; }
+function AvailabilitySwitch({ item, disabled, onToggle }: { item: Item; disabled: boolean; onToggle: (item: Item) => void }) { return <button type="button" className={`availability-switch ${item.available ? "is-on" : "is-off"}`} disabled={disabled} onClick={() => onToggle(item)} aria-pressed={item.available} aria-label={`${disabled ? "Saving availability for" : item.available ? "Mark unavailable" : "Mark available"}: ${item.name}`} title={disabled ? "Saving availability…" : item.available ? "Click to mark unavailable" : "Click to mark available"}><span aria-hidden="true">{disabled ? "…" : item.available ? "✓" : "×"}</span><small>{disabled ? "Saving…" : item.available ? "Available · click to pause" : "Unavailable · click to enable"}</small></button>; }
 function QueueItem({ order, onAdvance, pending = false }: { order: Order; onAdvance: (order: Order) => void; pending?: boolean }) {
   const next: Record<string, string> = { SUBMITTED: "Accept order", ACCEPTED: "Mark order ready", PREPARING: "Mark order ready", READY: "Mark collected" };
   return <article className="queue-item"><div className="queue-number" aria-label={`Pickup number ${order.pickup_code}`}>{order.pickup_code}<small>Pickup number</small></div><div className="queue-details"><div><b>{human(order.status)}</b><small>{order.mode === "QUICK" ? "Quick pickup" : order.pickup_window ? `Pickup ${new Date(order.pickup_window.start_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Scheduled"} · {order.waiting_minutes ?? 0} min</small><small className="queue-student-id">Student ID: {order.student_id || "Not available"}</small></div><p>{order.items.map((line, index) => <span key={`${line.name}-${index}`}>{line.quantity} × {line.name}</span>)}</p></div><div className="queue-amount">{order.total_display}</div>{next[order.status] && <button type="button" className="blue-button queue-action" disabled={pending} onClick={() => onAdvance(order)}>{pending ? "Saving…" : `${next[order.status]} →`}</button>}</article>;
