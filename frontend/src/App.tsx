@@ -128,6 +128,16 @@ export default function App() {
     return body as T;
   }, [canteenPassword, csrf]);
 
+  const loadPickupSchedule = useCallback(async () => {
+    try {
+      const result = await request<{ windows: PickupWindow[] }>("/api/pickup-windows", { cache: "no-store" });
+      if (Array.isArray(result.windows)) return result.windows;
+    } catch { /* Use the shared Netlify schedule when the API route is not deployed. */ }
+    const result = await request<{ windows: PickupWindow[] }>(`${SHARED_DATA_URL}?scope=pickup-windows`, { cache: "no-store" });
+    if (!Array.isArray(result.windows)) throw new Error("Pickup schedule is unavailable.");
+    return result.windows;
+  }, [request]);
+
   const loadSharedAvailability = useCallback(async () => {
     const versionsAtRequest = new Map(availabilityVersionRef.current);
     const pendingAtRequest = new Set(availabilityPendingRef.current);
@@ -196,10 +206,9 @@ export default function App() {
   useEffect(() => {
     document.title = page === "owner" ? "CedarBite Canteen Console" : page === "confirmation" ? "Order confirmed · CedarBite" : page === "about" ? "About CedarBite" : page === "privacy" ? "Privacy Policy · CedarBite" : page === "contact" ? "Contact CedarBite" : "CedarBite — order your break";
     void loadMenu();
-    void request<{ windows: PickupWindow[] }>("/api/pickup-windows").then((result) => {
-      if (!Array.isArray(result.windows)) throw new Error("Pickup schedule is unavailable.");
+    void loadPickupSchedule().then((windows) => {
       pickupWindowsFromApiRef.current = true;
-      setPickupWindows(result.windows);
+      setPickupWindows(windows);
     }).catch(() => {
       pickupWindowsFromApiRef.current = false;
       setPickupWindows(samplePickupWindows());
@@ -211,7 +220,7 @@ export default function App() {
     try { setOrders(JSON.parse(localStorage.getItem(DEMO_ORDERS_KEY) || "[]") as Order[]); } catch { setOrders([]); }
     const params = new URLSearchParams(window.location.search);
     if (params.get("signin_error")) { setToast(params.get("signin_error") ?? "Cedar sign-in failed."); window.history.replaceState({}, "", window.location.pathname); }
-  }, [loadMenu, page, request]);
+  }, [loadMenu, loadPickupSchedule, page, request]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = darkMode ? "dark" : "light";
@@ -223,14 +232,15 @@ export default function App() {
       const now = Date.now();
       setScheduleClock(now);
       if (!pickupWindowsFromApiRef.current) setPickupWindows(samplePickupWindows(new Date(now)));
-      void request<{ windows: PickupWindow[] }>("/api/pickup-windows").then((result) => {
-        if (!Array.isArray(result.windows)) return;
+      void loadPickupSchedule().then((windows) => {
         pickupWindowsFromApiRef.current = true;
-        setPickupWindows(result.windows);
-      }).catch(() => {});
+        setPickupWindows(windows);
+      }).catch(() => {
+        if (!pickupWindowsFromApiRef.current) setPickupWindows(samplePickupWindows(new Date(now)));
+      });
     }, 30_000);
     return () => window.clearInterval(timer);
-  }, [request]);
+  }, [loadPickupSchedule]);
 
   useEffect(() => {
     if (selectedWindow && !availablePickupWindows.some((window) => String(window.id) === selectedWindow)) setSelectedWindow("");

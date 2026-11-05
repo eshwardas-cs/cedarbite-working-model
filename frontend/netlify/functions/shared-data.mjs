@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
-import { validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
+import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
   name: "cedarbite-shared-pilot",
@@ -57,6 +57,10 @@ export default async (request) => {
         const menu = await store.get("menu/catalog", { type: "json", consistency: "strong" });
         return reply({ categories: Array.isArray(menu?.categories) ? menu.categories : null });
       }
+      if (url.searchParams.get("scope") === "pickup-windows") {
+        const orders = await readByPrefix("queue/");
+        return reply({ windows: listPickupWindows(orders) });
+      }
       if (url.searchParams.get("scope") === "queue") {
         if (!managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
         if (!isManager(request)) return reply({ error: "Canteen sign-in is required to view orders." }, 401);
@@ -94,6 +98,11 @@ export default async (request) => {
       for (const item of order.items) {
         const available = await store.get(`availability/${item.item_id}`, { type: "json", consistency: "strong" });
         if (available === false) return reply({ error: `${item.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
+      }
+      if (order.mode === "SCHEDULED") {
+        const activeOrders = await readByPrefix("queue/");
+        const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
+        if (!slotAvailable) return reply({ error: "That pickup slot is full or no longer available. Choose another 10-minute slot." }, 409);
       }
       const saved = {
         id: order.id,
