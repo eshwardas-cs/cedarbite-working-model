@@ -287,6 +287,23 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 :root[data-theme="dark"] .queue-delete-button:hover:not(:disabled){background:#482726;border-color:#9c5a55}
 @media(max-width:680px){.queue-actions{grid-column:2;justify-content:flex-start}.queue-delete-button{width:40px;height:40px}}
 
+.menu-sort-controls{flex:none;display:flex;align-items:center;gap:2px}
+.menu-sort-help{margin:12px 0 5px;color:#728196;font-size:11px;line-height:1.5}
+.menu-drag-handle,.menu-sort-arrows button{width:25px;height:27px;padding:0;display:grid;place-items:center;border:1px solid transparent;border-radius:4px;background:transparent;color:#728196;font-size:15px;line-height:1}
+.menu-drag-handle{cursor:grab;font-size:20px;touch-action:none}
+.menu-drag-handle:active{cursor:grabbing}
+.menu-sort-arrows{display:grid;gap:1px}
+.menu-sort-arrows button{width:22px;height:18px;font-size:12px}
+.menu-drag-handle:hover:not(:disabled),.menu-sort-arrows button:hover:not(:disabled){border-color:#d8e1eb;background:#f0f4f8;color:#102b4c}
+.menu-sort-arrows button:disabled{opacity:.35;cursor:not-allowed}
+.menu-admin-row:has(.menu-drag-handle){transition:background .15s,box-shadow .15s}
+.menu-admin-row:has(.menu-drag-handle):hover{background:#f8fafc}
+:root[data-theme="dark"] .menu-drag-handle,:root[data-theme="dark"] .menu-sort-arrows button{color:#c4d1df}
+:root[data-theme="dark"] .menu-sort-help{color:#b8c6d6}
+:root[data-theme="dark"] .menu-drag-handle:hover:not(:disabled),:root[data-theme="dark"] .menu-sort-arrows button:hover:not(:disabled){border-color:#41556c;background:#20334a;color:#fff0b4}
+:root[data-theme="dark"] .menu-admin-row:has(.menu-drag-handle):hover{background:#192b40}
+@media(max-width:680px){.menu-sort-controls{gap:1px}.menu-drag-handle{width:26px;height:34px}.menu-sort-arrows button{height:19px}}
+
 /* Keep every staff station readable when the shared theme is dark. */
 :root[data-theme="dark"] .stations-page{color:#e7edf5}
 :root[data-theme="dark"] .stations-page>h1,:root[data-theme="dark"] .stations-page h2{color:#f1f5fa}
