@@ -199,3 +199,8 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 .order-stage-cards button:hover{transform:translateY(-2px);border-color:#ffc928;box-shadow:0 10px 24px #102b4c12}
 .order-stage-cards span{font-size:.72rem;font-weight:850;letter-spacing:.12em;color:#b77900}.order-stage-cards b{font-size:2rem}.order-stage-cards small{color:#64748b}
 @media(max-width:680px){.order-stage-cards{grid-template-columns:1fr}.order-stage-cards button{grid-template-columns:1fr auto;align-items:center}.order-stage-cards button small{grid-column:1/-1}}
+.password-help{max-width:420px;margin:0 auto;color:#64748b;font-size:.9rem;line-height:1.5}
+.staff-password-panel{margin:14px 0;padding:12px 16px;border:1px solid #dce4eb;border-radius:14px;background:var(--panel,#fff);color:var(--ink,#102b4c)}
+.staff-password-panel>summary{font-weight:750;cursor:pointer}.staff-password-panel .owner-form{max-width:440px;margin-top:14px}
+.owner-top-actions .staff-password-panel{max-width:300px}.owner-top-actions .staff-password-panel[open]{position:absolute;right:36px;top:76px;z-index:10;box-shadow:0 16px 44px #102b4c22}
+.kitchen-screen .staff-password-panel{max-width:440px;margin:22px 0;background:#193a5e;border-color:#ffffff44;color:white}.kitchen-screen .staff-password-panel input{color:#102b4c}

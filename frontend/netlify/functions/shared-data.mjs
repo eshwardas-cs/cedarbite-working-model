@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
@@ -24,19 +24,44 @@ const staffSettings = {
   kitchen: { username: () => process.env.CANTEEN_KITCHEN_USERNAME || "kitchenmonitor", password: () => process.env.CANTEEN_KITCHEN_PASSWORD },
 };
 
-function staffConfigured(station) {
-  return Boolean(staffSettings[station]?.password()?.trim());
+async function stationPassword(station) {
+  return await store.get(`staff-passwords/${station}`, { type: "json", consistency: "strong" });
 }
 
-function isStaff(request, station) {
+async function staffConfigured(station) {
+  return Boolean(staffSettings[station]?.password()?.trim() || await stationPassword(station));
+}
+
+async function passwordMatches(station, candidate) {
   const config = staffSettings[station];
-  return Boolean(config && staffConfigured(station) && request.headers.get("x-canteen-role") === station &&
-    safeEqual(request.headers.get("x-canteen-username"), config.username()) &&
-    safeEqual(request.headers.get("x-canteen-password"), config.password()));
+  if (!config) return false;
+  const saved = await stationPassword(station);
+  if (saved?.salt && saved?.hash) {
+    const actual = scryptSync(candidate, Buffer.from(saved.salt, "base64"), 64);
+    const expected = Buffer.from(saved.hash, "base64");
+    return expected.length === actual.length && timingSafeEqual(actual, expected);
+  }
+  return Boolean(config.password()?.trim() && safeEqual(candidate, config.password()));
 }
 
-const managerConfigured = () => staffConfigured("order_manager");
-const isManager = (request) => isStaff(request, "order_manager");
+function passwordRecord(password) {
+  const salt = randomBytes(16);
+  return { salt: salt.toString("base64"), hash: scryptSync(password, salt, 64).toString("base64"), updated_at: new Date().toISOString() };
+}
+
+function validNewPassword(value) {
+  return typeof value === "string" && value.length >= 12 && value.length <= 128;
+}
+
+async function isStaff(request, station) {
+  const config = staffSettings[station];
+  return Boolean(config && await staffConfigured(station) && request.headers.get("x-canteen-role") === station &&
+    safeEqual(request.headers.get("x-canteen-username"), config.username()) &&
+    await passwordMatches(station, request.headers.get("x-canteen-password") ?? ""));
+}
+
+const managerConfigured = async () => staffConfigured("order_manager");
+const isManager = async (request) => isStaff(request, "order_manager");
 const stationLabel = { order_manager: "order control", order_taker: "counter orders", cashier: "cash desk", kitchen: "kitchen monitor" };
 
 async function readByPrefix(prefix) {
@@ -80,8 +105,8 @@ export default async (request) => {
       if (["queue", "cash-desk", "kitchen", "history", "wallet-history"].includes(url.searchParams.get("scope"))) {
         const scope = url.searchParams.get("scope");
         const station = scope === "cash-desk" || scope === "wallet-history" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
-        if (!staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
-        if (!isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
+        if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
+        if (!await isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
         await migrateLegacyQueue();
         if (scope === "wallet-history") {
           const entries = await readByPrefix("wallet-topups/");
@@ -108,9 +133,28 @@ export default async (request) => {
       const station = typeof body.station === "string" ? body.station : "order_manager";
       const config = staffSettings[station];
       if (!config) return reply({ error: "Choose a valid canteen station." }, 400);
-      if (!staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet. Add its password in Netlify environment variables.` }, 503);
-      if (!safeEqual(String(body.username ?? "").trim(), config.username()) || !safeEqual(String(body.password ?? ""), config.password())) return reply({ error: "That station username or password is incorrect." }, 401);
+      if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet. Add its password in Netlify environment variables.` }, 503);
+      if (!safeEqual(String(body.username ?? "").trim(), config.username()) || !await passwordMatches(station, String(body.password ?? ""))) return reply({ error: "That station username or password is incorrect." }, 401);
       return reply({ ok: true, station, username: config.username() });
+    }
+
+    if (body.action === "change-password") {
+      const station = String(body.station ?? "");
+      if (!staffSettings[station]) return reply({ error: "Choose a valid staff station." }, 400);
+      if (station === "order_manager") return reply({ error: "Change the order manager password in Netlify environment variables so the manager account retains its recovery path." }, 400);
+      if (!validNewPassword(body.new_password)) return reply({ error: "Use a new password between 12 and 128 characters." }, 400);
+      if (!await isStaff(request, station)) return reply({ error: "Your station session could not be verified. Sign in again and retry." }, 401);
+      await store.setJSON(`staff-passwords/${station}`, passwordRecord(body.new_password));
+      return reply({ ok: true, station });
+    }
+
+    if (body.action === "reset-station-password") {
+      const station = String(body.station ?? "");
+      if (!["order_taker", "cashier", "kitchen"].includes(station)) return reply({ error: "Choose a staff station that the order manager can reset." }, 400);
+      if (!validNewPassword(body.new_password)) return reply({ error: "Use a new password between 12 and 128 characters." }, 400);
+      if (!await isManager(request)) return reply({ error: "Only the order manager can reset another station password." }, 401);
+      await store.setJSON(`staff-passwords/${station}`, passwordRecord(body.new_password));
+      return reply({ ok: true, station });
     }
 
     if (body.action === "create-order") {
@@ -152,8 +196,8 @@ export default async (request) => {
     }
 
     if (body.action === "create-counter-order") {
-      if (!staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
-      if (!isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to place an in-person order." }, 401);
+      if (!await staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
+      if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to place an in-person order." }, 401);
       const order = body.order;
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
@@ -168,8 +212,8 @@ export default async (request) => {
     }
 
     if (body.action === "cash-topup") {
-      if (!staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
-      if (!isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record a top-up." }, 401);
+      if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
+      if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record a top-up." }, 401);
       const student_id = String(body.student_id ?? "");
       const amount_paisa = Number(body.amount_paisa);
       if (!/^\d{7}$/.test(student_id) || !Number.isSafeInteger(amount_paisa) || amount_paisa < 5000 || amount_paisa > 500000) return reply({ error: "Enter a 7-digit student ID and a cash amount from Rs 50 to Rs 5,000." }, 400);
@@ -188,8 +232,8 @@ export default async (request) => {
     }
 
     if (body.action === "mark-cash-paid") {
-      if (!staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
-      if (!isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
+      if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
+      if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
       const orderId = String(body.order_id ?? "");
       const key = `queue/${orderId}`;
       const order = await store.get(key, { type: "json", consistency: "strong" });
@@ -201,8 +245,8 @@ export default async (request) => {
       return reply({ order: updated });
     }
 
-    if (!managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
-    if (!isManager(request)) return reply({ error: "Sign in to the order control station to change shared data." }, 401);
+    if (!await managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
+    if (!await isManager(request)) return reply({ error: "Sign in to the order control station to change shared data." }, 401);
 
     if (body.action === "set-menu") {
       const categories = body.categories;
