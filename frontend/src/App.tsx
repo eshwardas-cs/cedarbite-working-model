@@ -4,13 +4,18 @@ import { availablePickupWindows as filterPickupWindows, formatPickupTime, sample
 type User = { email: string; role: string; email_verified: boolean; student_id: string | null; permissions: string[]; csrf_token: string };
 type Item = { id: number; category_id: number; name: string; description: string; price_paisa: number; price_display: string; available: boolean; quick_allowed: boolean; scheduled_allowed: boolean; prep_minutes: number | null };
 type Category = { id: number; name: string; items: Item[] };
-type Order = { id: string | number; status: string; mode: string; total_display?: string; pickup_code: string; created_at: string; completed_at?: string; pickup_window?: { start_at: string; end_at: string } | null; items: { item_id?: number; name: string; quantity: number }[]; waiting_minutes?: number; student_id?: string | null };
+type Order = { id: string | number; status: string; mode: string; total_display?: string; pickup_code: string; created_at: string; completed_at?: string; pickup_window?: { start_at: string; end_at: string } | null; items: { item_id?: number; name: string; quantity: number }[]; waiting_minutes?: number; student_id?: string | null; payment_method?: string; payment_status?: string };
 type Deal = { id: string; title: string; description: string; active: boolean; item_ids?: number[] };
-type Page = "menu" | "orders" | "owner" | "about" | "privacy" | "contact" | "team" | "confirmation";
+type Page = "menu" | "orders" | "owner" | "stations" | "counter" | "cashdesk" | "order-manager" | "kitchen" | "about" | "privacy" | "contact" | "team" | "confirmation";
 type OrderMode = "quick" | "scheduled";
 type WalletEntry = { id: string | number; label: string; amount: number; kind: "credit" | "debit"; created_at: string; method: string };
 
 function pageForPath(path: string): Page {
+  if (path === "/stations") return "stations";
+  if (path === "/counter") return "counter";
+  if (path === "/cash-desk") return "cashdesk";
+  if (path === "/order-manager") return "order-manager";
+  if (path === "/kitchen") return "kitchen";
   if (path.startsWith("/owner")) return "owner";
   if (path.startsWith("/my-orders")) return "orders";
   if (path === "/order-confirmation") return "confirmation";
@@ -19,6 +24,9 @@ function pageForPath(path: string): Page {
   if (path === "/contact-us") return "contact";
   if (path === "/team") return "team";
   return "menu";
+}
+function stationForPage(page: Page) {
+  return page === "counter" ? "order_taker" : page === "cashdesk" ? "cashier" : page === "kitchen" ? "kitchen" : "order_manager";
 }
 
 const money = (paisa: number) => `Rs ${(paisa / 100).toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -60,7 +68,11 @@ export default function App() {
   const [csrf, setCsrf] = useState("");
   const [canteenPassword, setCanteenPassword] = useState(() => sessionStorage.getItem(CANTEEN_SESSION_KEY) || "");
   const [canteenUsername, setCanteenUsername] = useState(() => sessionStorage.getItem(CANTEEN_USERNAME_KEY) || "manager");
-  const [canteenStation, setCanteenStation] = useState(() => sessionStorage.getItem(CANTEEN_ROLE_KEY) || "order_manager");
+  const [canteenStation, setCanteenStation] = useState(() => {
+    const routePage = pageForPath(window.location.pathname);
+    if (["counter", "cashdesk", "order-manager", "kitchen"].includes(routePage)) return stationForPage(routePage);
+    return sessionStorage.getItem(CANTEEN_ROLE_KEY) || "order_manager";
+  });
   const [categories, setCategories] = useState<Category[]>([]);
   const [demoMenuReady, setDemoMenuReady] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -159,7 +171,7 @@ export default function App() {
     const versionsAtRequest = new Map(availabilityVersionRef.current);
     const pendingAtRequest = new Set(availabilityPendingRef.current);
     try {
-      const result = await request<{ availability: Record<string, boolean> }>(`${SHARED_DATA_URL}?scope=availability`);
+      const result = await request<{ availability: Record<string, boolean> }>(`${SHARED_DATA_URL}?scope=availability`, { cache: "no-store" });
       setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((item) => {
         const id = item.id;
         if (pendingAtRequest.has(id) || availabilityPendingRef.current.has(id) || (availabilityVersionRef.current.get(id) ?? 0) !== (versionsAtRequest.get(id) ?? 0)) return item;
@@ -182,20 +194,22 @@ export default function App() {
       } catch { /* Continue with the saved or built-in menu if shared storage is unavailable. */ }
       const saved = localStorage.getItem("cedarbite-demo-menu");
       if (saved) { try { setCategories(JSON.parse(saved) as Category[]); setMenuError(""); void loadSharedAvailability(); } catch { localStorage.removeItem("cedarbite-demo-menu"); } return; }
-      if (user.role === "DEMO_CANTEEN") { void loadSharedAvailability(); return; }
+      if (user.role === "DEMO_CANTEEN") { setCategories(sampleMenu); void loadSharedAvailability(); return; }
     }
     try { const result = await request<{ categories: Category[] }>(manage ? "/api/menu/manage" : "/api/menu"); setCategories(result.categories); setMenuError(""); void loadSharedAvailability(); }
     catch { setCategories(sampleMenu); setMenuError(""); void loadSharedAvailability(); }
   }, [loadSharedAvailability, request, user]);
   const loadQueue = useCallback(async () => {
+    if (canteenStation === "order_taker") return;
     if (queueLoadInFlightRef.current) { queueRefreshRequestedRef.current = true; return; }
     queueLoadInFlightRef.current = true;
     const revision = queueRevisionRef.current;
     try {
-      const path = user?.role === "DEMO_CANTEEN" ? `${SHARED_DATA_URL}?scope=queue` : "/api/queue";
+      const scope = canteenStation === "cashier" ? "cash-desk" : canteenStation === "kitchen" ? "kitchen" : "queue";
+      const path = user?.role === "DEMO_CANTEEN" ? `${SHARED_DATA_URL}?scope=${scope}` : "/api/queue";
       const result = await request<{ orders: Order[] }>(path, { cache: "no-store" });
       if (revision === queueRevisionRef.current) setQueue(result.orders);
-    } catch (error) { if (page === "owner") setToast(error instanceof Error ? error.message : "Queue unavailable."); }
+    } catch (error) { if (["owner", "order-manager", "cashdesk", "kitchen"].includes(page)) setToast(error instanceof Error ? error.message : "Queue unavailable."); }
     finally {
       queueLoadInFlightRef.current = false;
       if (queueRefreshRequestedRef.current) {
@@ -203,25 +217,25 @@ export default function App() {
         queueRefreshRef.current();
       }
     }
-  }, [page, request, user]);
+  }, [canteenStation, page, request, user]);
   const loadOrderHistory = useCallback(async () => {
-    if (user?.role !== "DEMO_CANTEEN") return;
+    if (user?.role !== "DEMO_CANTEEN" || canteenStation !== "order_manager") return;
     try {
       const result = await request<{ orders: Order[] }>(`${SHARED_DATA_URL}?scope=history`, { cache: "no-store" });
       setOrderHistory(result.orders);
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Order history could not be loaded.");
     }
-  }, [request, user]);
+  }, [canteenStation, request, user]);
   const loadWalletTopUpHistory = useCallback(async () => {
-    if (user?.role !== "DEMO_CANTEEN") return;
+    if (user?.role !== "DEMO_CANTEEN" || canteenStation !== "cashier") return;
     try {
       const result = await request<{ entries: typeof walletTopUpHistory }>(`${SHARED_DATA_URL}?scope=wallet-history`, { cache: "no-store" });
       setWalletTopUpHistory(result.entries);
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Wallet top-up history could not be loaded.");
     }
-  }, [request, user]);
+  }, [canteenStation, request, user]);
   queueRefreshRef.current = () => { void loadQueue(); };
   const loadOrders = useCallback(async () => {
     try { const result = await request<{ orders: Order[] }>("/api/orders"); setOrders(result.orders); }
@@ -293,7 +307,7 @@ export default function App() {
   useEffect(() => { if (user?.role === "DEMO_CANTEEN") { const saved = localStorage.getItem("cedarbite-demo-menu"); if (saved) try { setCategories(JSON.parse(saved) as Category[]); } catch { localStorage.removeItem("cedarbite-demo-menu"); } setDemoMenuReady(true); } else { setDemoMenuReady(false); if (user?.role === "DEMO_STUDENT") { try { const saved = JSON.parse(localStorage.getItem(walletKey(user.email)) || "null"); setWalletBalance(saved?.balance ?? 0); setWalletEntries(saved?.entries ?? []); } catch { setWalletBalance(0); setWalletEntries([]); } } } }, [user]);
   useEffect(() => { if (user?.role === "DEMO_CANTEEN" && demoMenuReady && categories.length) localStorage.setItem("cedarbite-demo-menu", JSON.stringify(categories)); }, [categories, user, demoMenuReady]);
   useEffect(() => {
-    if (page !== "owner" || user?.role !== "DEMO_CANTEEN") return;
+    if (!(["owner", "order-manager", "counter", "cashdesk", "kitchen"] as Page[]).includes(page) || user?.role !== "DEMO_CANTEEN") return;
     const refreshQueue = () => { if (!document.hidden) void loadQueue(); };
     const timer = window.setInterval(refreshQueue, 2_000);
     window.addEventListener("focus", refreshQueue);
@@ -301,7 +315,7 @@ export default function App() {
     return () => { window.clearInterval(timer); window.removeEventListener("focus", refreshQueue); document.removeEventListener("visibilitychange", refreshQueue); };
   }, [loadQueue, page, user?.role]);
   useEffect(() => {
-    if (page !== "menu" && page !== "owner") return;
+    if (page !== "menu" && !(["owner", "order-manager", "cashdesk", "kitchen"] as Page[]).includes(page)) return;
     void loadSharedAvailability();
     const timer = window.setInterval(() => {
       if (user?.role === "DEMO_STUDENT") void loadMenu();
@@ -324,7 +338,7 @@ export default function App() {
     setPage(next);
     if (next === "menu") setDealsActive(false);
     setMobileMenuOpen(false);
-    const url = next === "owner" ? "/owner" : next === "orders" ? "/my-orders" : next === "confirmation" ? "/order-confirmation" : next === "about" ? "/about" : next === "privacy" ? "/privacy-policy" : next === "contact" ? "/contact-us" : next === "team" ? "/team" : "/";
+    const url = next === "owner" ? "/owner" : next === "stations" ? "/stations" : next === "counter" ? "/counter" : next === "cashdesk" ? "/cash-desk" : next === "order-manager" ? "/order-manager" : next === "kitchen" ? "/kitchen" : next === "orders" ? "/my-orders" : next === "confirmation" ? "/order-confirmation" : next === "about" ? "/about" : next === "privacy" ? "/privacy-policy" : next === "contact" ? "/contact-us" : next === "team" ? "/team" : "/";
     window.history.pushState({}, "", url);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -347,8 +361,29 @@ export default function App() {
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Sign in failed (${response.status}).`);
     } catch (error) { throw new Error(error instanceof Error ? error.message : "Canteen sign-in could not be verified."); }
-    const demoUser: User = { email: "demo-canteen@local", role: "DEMO_CANTEEN", email_verified: true, student_id: null, permissions: ["orders.view_own", "queue.view", "menu.manage", "availability.toggle"], csrf_token: "demo-local" };
+    const permissions: Record<string, string[]> = {
+      order_manager: ["queue.view", "menu.manage", "availability.toggle"],
+      order_taker: ["counter.orders"],
+      cashier: ["cashier.manage", "wallet.cash_topup"],
+      kitchen: ["kitchen.view"],
+    };
+    const demoUser: User = { email: `${station}@canteen.local`, role: "DEMO_CANTEEN", email_verified: true, student_id: null, permissions: permissions[station] ?? [], csrf_token: "demo-local" };
     sessionStorage.setItem(CANTEEN_SESSION_KEY, password); sessionStorage.setItem(CANTEEN_USERNAME_KEY, username.trim()); sessionStorage.setItem(CANTEEN_ROLE_KEY, station); setCanteenPassword(password); setCanteenUsername(username.trim()); setCanteenStation(station); localStorage.setItem(DEMO_USER_KEY, JSON.stringify(demoUser)); setUser(demoUser); setCsrf(demoUser.csrf_token); setToast("Canteen workspace opened.");
+  }
+  async function markCashPaid(order: Order) {
+    const orderId = String(order.id);
+    if (queueMutationPendingRef.current.has(orderId)) return;
+    queueMutationPendingRef.current.add(orderId);
+    setQueuePendingIds((current) => [...new Set([...current, orderId])]);
+    try {
+      await request(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "mark-cash-paid", order_id: orderId }) });
+      setToast(`Cash received for order ${order.pickup_code}.`);
+    } catch (error) { setToast(error instanceof Error ? error.message : "Cash receipt was not recorded."); }
+    finally {
+      queueMutationPendingRef.current.delete(orderId);
+      setQueuePendingIds((current) => current.filter((id) => id !== orderId));
+      void loadQueue();
+    }
   }
   async function signOut() { if (user?.role.startsWith("DEMO_")) { localStorage.removeItem(DEMO_USER_KEY); if (user.role === "DEMO_CANTEEN") { sessionStorage.removeItem(CANTEEN_SESSION_KEY); sessionStorage.removeItem(CANTEEN_USERNAME_KEY); sessionStorage.removeItem(CANTEEN_ROLE_KEY); setCanteenPassword(""); setCanteenUsername(""); setCanteenStation("order_manager"); setQueue([]); } setUser(null); setCsrf(""); setToast("You are signed out."); return; } try { await request("/api/auth/logout", { method: "POST" }); setUser(null); setCsrf(""); setToast("You are signed out."); } catch (error) { setToast(error instanceof Error ? error.message : "Sign out failed."); } }
   async function cashWalletTopUp(form: HTMLFormElement) {
@@ -358,6 +393,25 @@ export default function App() {
     const note = String(data.get("note") ?? "").trim();
     if (!/^\d{7}$/.test(student_id)) { setWalletMessage("Enter the student’s 7-digit Cedar ID."); return; }
     if (!Number.isFinite(amount) || amount < 50 || amount > 5000) { setWalletMessage("Enter a cash amount from Rs 50 to Rs 5,000."); return; }
+    if (user?.role === "DEMO_CANTEEN" && canteenStation === "cashier") {
+      if (cashTopUpPending) return;
+      const signature = `${student_id}:${Math.round(amount * 100)}:${note}`;
+      if (!cashTopUpRequest.current || cashTopUpRequest.current.signature !== signature) cashTopUpRequest.current = { signature, key: crypto.randomUUID() };
+      setWalletMessage("Recording cash received…");
+      setCashTopUpPending(true);
+      try {
+        const result = await request<{ student_id: string; balance_paisa: number }>(SHARED_DATA_URL, {
+          method: "POST",
+          body: JSON.stringify({ action: "cash-topup", student_id, amount_paisa: Math.round(amount * 100), note, idempotency_key: cashTopUpRequest.current.key }),
+        });
+        setWalletMessage(`Added ${money(Math.round(amount * 100))} for student ${result.student_id}. New balance: ${money(result.balance_paisa)}.`);
+        cashTopUpRequest.current = null;
+        form.reset();
+        void loadWalletTopUpHistory();
+      } catch (error) { setWalletMessage(error instanceof Error ? error.message : "Cash top-up was not recorded."); }
+      finally { setCashTopUpPending(false); }
+      return;
+    }
     if (user?.role === "DEMO_CANTEEN") {
       const email = `${student_id}@cedar.edu.pk`;
       const amount_paisa = Math.round(amount * 100);
@@ -460,22 +514,28 @@ export default function App() {
       availabilityPendingRef.current.add(item.id);
       availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
       setAvailabilityPending((current) => [...current, item.id]);
-      setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, available } : entry) })));
       try {
         const result = await request<{ item_id: number; available: boolean }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "set-availability", item_id: item.id, available }) });
-        setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === result.item_id ? { ...entry, available: result.available } : entry) })));
+        if (result.item_id !== item.id || typeof result.available !== "boolean") throw new Error("The canteen did not confirm this availability change.");
+        setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, available: result.available } : entry) })));
         setToast(`${item.name} marked ${available ? "available" : "unavailable"} for everyone.`);
       } catch (error) {
-        setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, available: previousAvailable } : entry) })));
-        setToast(error instanceof Error ? error.message : "Availability could not be saved. The previous setting was restored.");
+        setToast(error instanceof Error ? error.message : "Availability could not be saved.");
       } finally {
+        availabilityVersionRef.current.set(item.id, (availabilityVersionRef.current.get(item.id) ?? 0) + 1);
         availabilityPendingRef.current.delete(item.id);
         setAvailabilityPending((current) => current.filter((id) => id !== item.id));
         void loadSharedAvailability();
       }
       return;
     }
-    try { await request(`/api/menu/items/${item.id}/availability`, { method: "PATCH", body: JSON.stringify({ is_available: !item.available }) }); await loadMenu(true); setToast(`${item.name} is now ${item.available ? "unavailable" : "available"}.`); }
+    try {
+      const result = await request<{ is_available?: boolean; available?: boolean }>(`/api/menu/items/${item.id}/availability`, { method: "PATCH", body: JSON.stringify({ is_available: !item.available }) });
+      const saved = result.is_available ?? result.available;
+      if (typeof saved !== "boolean") throw new Error("The canteen did not confirm this availability change.");
+      setCategories((current) => current.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, available: saved } : entry) })));
+      setToast(`${item.name} is now ${saved ? "available" : "unavailable"}.`);
+    }
     catch (error) { setToast(error instanceof Error ? error.message : "Could not update availability."); }
   }
   async function changePrice(item: Item, form: HTMLFormElement) {
@@ -553,31 +613,37 @@ export default function App() {
   async function advanceOrder(order: Order) {
     const next: Record<string, string> = { SUBMITTED: "ACCEPTED", ACCEPTED: "PREPARING", PREPARING: "READY", READY: "COLLECTED" };
     if (!next[order.status]) return;
-    if (user?.role === "DEMO_CANTEEN") {
-      const orderId = String(order.id);
-      if (queueMutationPendingRef.current.has(orderId)) return;
-      queueMutationPendingRef.current.add(orderId);
-      setQueuePendingIds((current) => [...current, orderId]);
+    const orderId = String(order.id);
+    if (queueMutationPendingRef.current.has(orderId)) return;
+    queueMutationPendingRef.current.add(orderId);
+    setQueuePendingIds((current) => [...new Set([...current, orderId])]);
+    try {
+      if (user?.role === "DEMO_CANTEEN") {
       queueRevisionRef.current += 1;
-      try {
         const result = await request<{ order: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "set-status", order_id: orderId, status: next[order.status] }) });
+        if (!result.order || result.order.status !== next[order.status]) throw new Error("The canteen did not confirm this order update.");
         queueRevisionRef.current += 1;
         setQueue((current) => result.order.status === "COLLECTED" ? current.filter((entry) => String(entry.id) !== orderId) : [result.order, ...current.filter((entry) => String(entry.id) !== orderId)]);
         if (result.order.status === "COLLECTED") setOrderHistory((current) => [result.order, ...current.filter((entry) => String(entry.id) !== orderId)].slice(0, 100));
         setToast(`Order ${order.pickup_code} updated.`);
-      } catch (error) {
-        queueRevisionRef.current += 1;
-        setToast(error instanceof Error ? error.message : "Order status was not changed.");
-      } finally {
-        queueMutationPendingRef.current.delete(orderId);
-        setQueuePendingIds((current) => current.filter((id) => id !== orderId));
-        void loadQueue();
-        if (next[order.status] === "COLLECTED") void loadOrderHistory();
+        return;
       }
-      return;
+      const result = await request<{ status?: string; order?: Order }>(`/api/orders/${order.id}/status`, { method: "POST", body: JSON.stringify({ to: next[order.status] }) });
+      const updated = result.order;
+      if (updated) setQueue((current) => updated.status === "COLLECTED" ? current.filter((entry) => String(entry.id) !== orderId) : [updated, ...current.filter((entry) => String(entry.id) !== orderId)]);
+      else await loadQueue();
+      setToast(`Order ${order.pickup_code} updated.`);
+    } catch (error) {
+      if (user?.role === "DEMO_CANTEEN") {
+        queueRevisionRef.current += 1;
+      }
+      setToast(error instanceof Error ? error.message : "Order status was not changed.");
+    } finally {
+      queueMutationPendingRef.current.delete(orderId);
+      setQueuePendingIds((current) => current.filter((id) => id !== orderId));
+      void loadQueue();
+      if (next[order.status] === "COLLECTED") void loadOrderHistory();
     }
-    try { await request(`/api/orders/${order.id}/status`, { method: "POST", body: JSON.stringify({ to: next[order.status] }) }); await loadQueue(); setToast(`Order ${order.pickup_code} updated.`); }
-    catch (error) { setToast(error instanceof Error ? error.message : "Order status was not changed."); }
   }
   async function toggleOrdering() {
     if (user?.role === "DEMO_CANTEEN") { setOrderingReason((current) => current.includes("paused") ? "Ordering is open" : "Ordering is paused"); return; }
@@ -618,7 +684,20 @@ export default function App() {
     setSelectedDeal(null); setCartOpen(true);
   }
 
-  if (page === "owner") return <OwnerApp user={user} googleReady={googleReady} categories={categories} items={items} queue={queue} orderHistory={orderHistory} walletTopUpHistory={walletTopUpHistory} onLoadHistory={() => void loadOrderHistory()} onLoadWalletTopUpHistory={() => void loadWalletTopUpHistory()} queuePendingIds={queuePendingIds} deals={deals} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} canManage={canManage} canToggle={canToggle} availabilityPending={availabilityPending} menuMutationPending={menuMutationPending} itemAddPending={itemAddPending} canQueue={canQueue} canTopUp={user?.role === "DEMO_CANTEEN" || (user?.permissions.includes("wallet.cash_topup") ?? false)} walletMessage={walletMessage} walletPending={cashTopUpPending} onCashTopUp={cashWalletTopUp} itemMessage={itemMessage} dealMessage={dealMessage} onSignIn={startSignIn} onDemoStaff={demoStaffSignIn} onSignOut={() => void signOut()} onBack={() => navigate("menu")} onToggle={toggleAvailability} onPrice={(item, form) => void changePrice(item, form)} onAddCategory={(form) => void addCategory(form)} onAddItem={(event) => void addItem(event)} onAdvance={(order) => void advanceOrder(order)} onToggleOrdering={() => void toggleOrdering()} onDeal={saveDeal} onDealToggle={(id) => setDeals((current) => current.map((deal) => deal.id === id ? { ...deal, active: !deal.active } : deal))} onRefresh={() => { void loadMenu(true); void loadQueue(); void loadOrderHistory(); void loadWalletTopUpHistory(); void loadWallet(); void loadSharedAvailability(); }} orderingReason={orderingReason} />;
+  if (page === "stations") return <StationDirectory onNavigate={(next) => navigate(next)} onBack={() => navigate("menu")}/>;
+  if (page === "counter") return <CounterStation user={user} items={items} windows={availablePickupWindows} pending={orderSubmitting} onSignIn={(username, password) => demoStaffSignIn(username, password, "order_taker")} onSignOut={() => void signOut()} onCreate={async (studentId, selections, mode, windowId) => {
+    const selected = items.filter((item) => selections[item.id] > 0);
+    if (!selected.length) throw new Error("Add at least one menu item.");
+    const pickupWindow = mode === "SCHEDULED" ? availablePickupWindows.find((slot) => String(slot.id) === windowId) : null;
+    if (mode === "SCHEDULED" && !pickupWindow) throw new Error("Choose a current pickup slot.");
+    const total = selected.reduce((sum, item) => sum + item.price_paisa * selections[item.id], 0);
+    const pickupCode = `CB${crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+    const order = { id: crypto.randomUUID(), pickup_code: pickupCode, mode, student_id: studentId, total_display: money(total), pickup_window: pickupWindow ? { start_at: pickupWindow.start_at, end_at: pickupWindow.end_at } : null, payment_method: "cash", items: selected.map((item) => ({ item_id: item.id, name: item.name, quantity: selections[item.id] })) };
+    const result = await request<{ order: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "create-counter-order", order }) });
+    return result.order;
+  }}/>
+  if (["owner", "order-manager", "cashdesk"].includes(page)) return <OwnerApp station={page === "cashdesk" ? "cashier" : "order_manager"} user={user} googleReady={googleReady} categories={categories} items={items} queue={queue} orderHistory={orderHistory} walletTopUpHistory={walletTopUpHistory} onLoadHistory={() => void loadOrderHistory()} onLoadWalletTopUpHistory={() => void loadWalletTopUpHistory()} queuePendingIds={queuePendingIds} deals={deals} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} canManage={canManage} canToggle={canToggle} availabilityPending={availabilityPending} menuMutationPending={menuMutationPending} itemAddPending={itemAddPending} canQueue={canQueue} canTopUp={user?.permissions.includes("wallet.cash_topup") ?? false} walletMessage={walletMessage} walletPending={cashTopUpPending} onCashTopUp={cashWalletTopUp} itemMessage={itemMessage} dealMessage={dealMessage} onSignIn={startSignIn} onDemoStaff={(username, password, station) => demoStaffSignIn(username, password, station)} onSignOut={() => void signOut()} onBack={() => navigate("menu")} onToggle={toggleAvailability} onPrice={(item, form) => void changePrice(item, form)} onAddCategory={(form) => void addCategory(form)} onAddItem={(event) => void addItem(event)} onAdvance={(order) => void advanceOrder(order)} onMarkCashPaid={markCashPaid} onToggleOrdering={() => void toggleOrdering()} onDeal={saveDeal} onDealToggle={(id) => setDeals((current) => current.map((deal) => deal.id === id ? { ...deal, active: !deal.active } : deal))} onRefresh={() => { void loadMenu(true); void loadQueue(); void loadOrderHistory(); void loadWalletTopUpHistory(); void loadWallet(); void loadSharedAvailability(); }} orderingReason={orderingReason} />;
+  if (page === "kitchen") return <KitchenStation user={user} queue={queue} pendingIds={queuePendingIds} onSignIn={(username, password) => demoStaffSignIn(username, password, "kitchen")} onSignOut={() => void signOut()}/>;
   if (page === "confirmation") return <main className="order-confirmation-page"><section className="order-confirmation-page-card"><div className="confirmation-check" aria-hidden="true">✓</div><span className="section-kicker">ORDER CONFIRMED</span><h1>Your order was placed successfully.</h1><div className="confirmation-pickup"><small>PICKUP NUMBER</small><strong>{orderConfirmation?.pickup_code ?? "—"}</strong></div><button className="blue-button" onClick={() => navigate("menu")}>← Return to menu</button></section></main>;
 
   return <div className="storefront">
@@ -638,7 +717,7 @@ export default function App() {
       {menuError ? <div className="empty-state error-state"><h2>Menu didn’t load</h2><p>{menuError}</p></div> : !items.length ? <div className="empty-state"><span>🍽️</span><h2>Menu being prepared</h2><p>Menu items will appear here when they are available.</p></div> : shownCategories.map((category) => <div className="menu-category" key={category.id}><div className="category-title"><h3>{category.name}</h3><span>{category.items.length} items</span></div><div className="food-grid">{category.items.map((item, index) => <FoodCard key={item.id} item={item} index={index} onAdd={() => { addToCart(item.id); setCartOpen(true); }} />)}</div></div>)}</div></div></section>
       <section className="how-it-works"><div><span className="section-kicker">TWO WAYS TO ORDER</span><h2>Made for <span>your day.</span></h2><p className="section-subcopy">Different food, different pickup. The canteen chooses which items and times it can support.</p></div><div className="ordering-modes"><article><span className="mode-icon">↗</span><div><small>01 · READY TO SELL</small><h3>Quick Order</h3><p>Choose a ready-made item, add it to your bucket, and move it through the canteen queue. No pickup slot is needed.</p></div></article><article><span className="mode-icon blue">◷</span><div><small>02 · MADE FRESH</small><h3>Scheduled Order</h3><p>For food that needs preparation, choose from pickup windows supported by the canteen.</p></div></article></div></section>      <section className="payment-note"><div><span className="section-kicker">CEDARBITE WALLET</span><h2>Top up. <span>Order. Enjoy.</span></h2><p>Top up your CedarBite wallet and choose a payment method at checkout. Practice credits are stored only in this browser; no money is transferred.</p><button className="blue-button" onClick={() => user?.role === "DEMO_STUDENT" ? setWalletOpen(true) : loginDialog.current?.showModal()}>Open wallet <span>→</span></button></div><div className="payment-pills"><span>EasyPaisa</span><span>JazzCash</span><span>Bank transfer</span><span>Card</span><span>Cash at pickup</span></div></section>
     </main>}
-    <footer className="store-footer"><div className="footer-main"><div><button className="wordmark footer-mark" onClick={() => navigate("menu")}><CedarMark/><span>Cedar<span>Bite</span></span></button><p>Queue · Order · Enjoy<br/>A Cedar College portfolio project in discovery.</p></div><div><b>Explore</b><button onClick={() => navigate("menu")}>Menu</button><button onClick={() => { navigate("menu"); setDealsActive(true); setTimeout(() => document.getElementById("deals")?.scrollIntoView({ behavior:"smooth" }),0); }}>Deals</button><button onClick={() => navigate("about")}>About us</button><button onClick={() => navigate("owner")}>Canteen dashboard</button></div><div><b>Help & information</b><button onClick={() => navigate("contact")}>Contact us</button><button onClick={() => navigate("privacy")}>Privacy policy</button></div><div><b>Team behind CedarBite</b><button className="team-footer-link" onClick={() => navigate("team")}>Meet the team <span aria-hidden="true">↗</span></button></div></div><div className="footer-bottom"><span>© {new Date().getFullYear()} CedarBite. All rights reserved.</span></div></footer>
+    <footer className="store-footer"><div className="footer-main"><div><button className="wordmark footer-mark" onClick={() => navigate("menu")}><CedarMark/><span>Cedar<span>Bite</span></span></button><p>Queue · Order · Enjoy<br/>A Cedar College portfolio project in discovery.</p></div><div><b>Explore</b><button onClick={() => navigate("menu")}>Menu</button><button onClick={() => { navigate("menu"); setDealsActive(true); setTimeout(() => document.getElementById("deals")?.scrollIntoView({ behavior:"smooth" }),0); }}>Deals</button><button onClick={() => navigate("about")}>About us</button><button onClick={() => navigate("owner")}>Canteen dashboard</button><button onClick={() => navigate("stations")}>Staff stations</button></div><div><b>Help & information</b><button onClick={() => navigate("contact")}>Contact us</button><button onClick={() => navigate("privacy")}>Privacy policy</button></div><div><b>Team behind CedarBite</b><button className="team-footer-link" onClick={() => navigate("team")}>Meet the team <span aria-hidden="true">↗</span></button></div></div><div className="footer-bottom"><span>© {new Date().getFullYear()} CedarBite. All rights reserved.</span></div></footer>
     {cartOpen && <div className="cart-scrim" onClick={() => setCartOpen(false)}><aside className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Your bucket"><div className="cart-head"><div><span className="section-kicker">YOUR ORDER</span><h2>Your bucket <small>({cartCount})</small></h2></div><button onClick={() => setCartOpen(false)} aria-label="Close bucket">×</button></div><div className="cart-service"><b>Pickup</b><span>{orderMode === "quick" ? "Quick Order · no slot required" : "Scheduled Order · choose a slot"}</span></div>{orderMode === "scheduled" && <label className="bucket-window">Choose your pickup slot<select value={selectedWindow} onChange={(event) => setSelectedWindow(event.target.value)}><option value="">{availablePickupWindows.length ? "Choose from the next available pickup slots" : "No pickup slots are available right now"}</option>{availablePickupWindows.slice(0, 6).map((window) => <option key={window.id} value={window.id}>{new Date(window.start_at).toLocaleString("en-PK", { timeZone:"Asia/Karachi", weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit" })} – {formatPickupTime(window.end_at)}</option>)}</select></label>}<div className="cart-lines">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => { const item = items.find((entry) => entry.id === Number(id)); if (!item) return null; return <div className="cart-line" key={id}><div><b>{item.name.replace("[DEV SAMPLE] ", "")}</b><small>{item.price_display} each</small></div><div className="quantity-controls"><button onClick={() => addToCart(item.id, -1)} aria-label={`Remove one ${item.name}`}>−</button><b>{quantity}</b><button onClick={() => addToCart(item.id, 1)} aria-label={`Add one ${item.name}`}>+</button></div><strong>{money(item.price_paisa * quantity)}</strong></div>; })}{!cartCount && <div className="cart-empty"><span>▣</span><h3>Your bucket is empty</h3><p>Add a menu item to start building your order.</p><button className="blue-button" onClick={() => { setCartOpen(false); document.getElementById("menu")?.scrollIntoView({behavior:"smooth"}); }}>Browse menu</button></div>}</div><div className="cart-bottom"><div className="cart-total"><span>Subtotal</span><b>{money(cartTotal)}</b></div><label className="demo-payment">Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="wallet">CedarBite wallet · {money(walletBalance)}</option><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="cash">Cash at pickup</option></select></label><p className="checkout-hint">Review your items and pickup details before placing the order.</p>{orderError && <p className="order-error" role="alert">{orderError}</p>}<button className="checkout-button" disabled={!cartCount || orderSubmitting || user?.role !== "DEMO_STUDENT" || (orderMode === "scheduled" && !selectedWindow)} onClick={placeDemoOrder}>{orderSubmitting ? "Sending order…" : user?.role === "DEMO_STUDENT" ? "Place demo order" : "Sign in to place an order"}</button>{user?.role !== "DEMO_STUDENT" && <button className="cart-signin" onClick={() => loginDialog.current?.showModal()}>Sign in with your Cedar email</button>}</div></aside></div>}
     <dialog className="signin-dialog" ref={loginDialog}><button className="dialog-x" onClick={() => loginDialog.current?.close()} aria-label="Close sign in">×</button><CedarMark/><span className="section-kicker">WELCOME TO CEDARBITE</span><h2>Sign in with your<br/><span>cedar email</span></h2><p>Use a Cedar College email to create a presentation profile saved in this browser. No password or Google credentials are requested.</p>{googleReady ? <button className="google-button" onClick={startSignIn}><GoogleIcon/> Sign in with Google account</button> : <form className="demo-signin-form" onSubmit={(event) => { event.preventDefault(); demoSignIn(demoEmail); }}><label>Cedar email<input type="email" required value={demoEmail} onChange={(event) => setDemoEmail(event.target.value)} placeholder="your.email@cedar.edu.pk"/></label><button className="google-button">Continue with Cedar email</button><small>Presentation sign-in · use a Cedar email</small></form>}<small className="secure-hint">Profile and practice wallet are saved in this browser only.</small></dialog>
     {walletOpen && <div className="wallet-scrim" onClick={() => setWalletOpen(false)}><section className="wallet-panel" role="dialog" aria-modal="true" aria-labelledby="wallet-title" onClick={(event) => event.stopPropagation()}><div className="cart-head"><div><span className="section-kicker">CEDARBITE WALLET</span><h2 id="wallet-title">Your wallet</h2></div><button onClick={() => setWalletOpen(false)} aria-label="Close wallet">×</button></div><div className="wallet-balance"><span>Available balance</span><b>{money(walletBalance)}</b><small>{user?.role === "DEMO_STUDENT" ? "Practice balance kept in this browser" : user?.role === "student" || user?.role === "staff_customer" ? "Shared account balance" : "Sign in with your Cedar account to view your wallet"}</small></div>{user?.role === "DEMO_STUDENT" ? <><label className="demo-payment">Top-up amount (PKR)<input type="number" min="100" max="5000" step="50" value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)}/></label><label className="demo-payment">Top up using<select value={topUpMethod} onChange={(event) => setTopUpMethod(event.target.value)}><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option></select></label><p className="wallet-note">Practice credit only. No payment provider is contacted and no money is transferred.</p><button className="blue-button wallet-topup" onClick={demoTopUp}>Add practice credit</button></> : <p className="wallet-note">To add cash to this wallet, give the money to canteen staff and ask them to record it against your student ID.</p>}<h3>Recent wallet activity</h3>{walletEntries.length ? <div className="wallet-history">{walletEntries.slice(0,5).map((entry) => <div key={entry.id}><span><b>{entry.label}</b><small>{new Date(entry.created_at).toLocaleString()} · {entry.method}</small></span><strong className={entry.kind}>{entry.kind === "credit" ? "+" : "−"}{money(entry.amount)}</strong></div>)}</div> : <p className="wallet-empty">No wallet activity yet.</p>}</section></div>}
@@ -675,21 +754,23 @@ function FoodCard({ item, index, onAdd }: { item: Item; index: number; onAdd: ()
 
 function OrderCard({ order }: { order: Order }) { return <article className="order-row"><div className="order-row-top"><b>Pickup number: {order.pickup_code}</b><span className="order-status">{human(order.status)}</span><span className="order-date">{new Date(order.created_at).toLocaleString()}</span></div><p>{order.items.map((line, index) => <span key={`${line.name}-${index}`}>{line.quantity} × {line.name}</span>)}</p><div className="order-row-bottom"><span>{human(order.mode)}{order.pickup_window ? ` · ${new Date(order.pickup_window.start_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : " · Quick pickup"}</span><b>{order.total_display}</b></div></article>; }
 
-type OwnerProps = { user: User | null; googleReady: boolean; categories: Category[]; items: (Item & { category: string })[]; queue: Order[]; orderHistory: Order[]; walletTopUpHistory: { id: string; student_id: string; amount_paisa: number; label: string; created_at: string; recorded_by?: string }[]; onLoadHistory: () => void; onLoadWalletTopUpHistory: () => void; queuePendingIds: string[]; deals: Deal[]; darkMode: boolean; onToggleTheme: () => void; canManage: boolean; canToggle: boolean; availabilityPending: number[]; menuMutationPending: boolean; itemAddPending: boolean; canQueue: boolean; canTopUp: boolean; walletMessage: string; walletPending: boolean; onCashTopUp: (form: HTMLFormElement) => void; itemMessage: string; dealMessage: string; orderingReason: string; onSignIn: () => void; onDemoStaff: (username: string, password: string) => Promise<void>; onSignOut: () => void; onBack: () => void; onToggle: (item: Item) => void; onPrice: (item: Item, form: HTMLFormElement) => void; onAddCategory: (form: HTMLFormElement) => void; onAddItem: (event: FormEvent<HTMLFormElement>) => void; onAdvance: (order: Order) => void; onToggleOrdering: () => void; onDeal: (event: FormEvent<HTMLFormElement>) => void; onDealToggle: (id: string) => void; onRefresh: () => void };
+type OwnerProps = { station: "order_manager" | "cashier"; user: User | null; googleReady: boolean; categories: Category[]; items: (Item & { category: string })[]; queue: Order[]; orderHistory: Order[]; walletTopUpHistory: { id: string; student_id: string; amount_paisa: number; label: string; created_at: string; recorded_by?: string }[]; onLoadHistory: () => void; onLoadWalletTopUpHistory: () => void; queuePendingIds: string[]; deals: Deal[]; darkMode: boolean; onToggleTheme: () => void; canManage: boolean; canToggle: boolean; availabilityPending: number[]; menuMutationPending: boolean; itemAddPending: boolean; canQueue: boolean; canTopUp: boolean; walletMessage: string; walletPending: boolean; onCashTopUp: (form: HTMLFormElement) => void; itemMessage: string; dealMessage: string; orderingReason: string; onSignIn: () => void; onDemoStaff: (username: string, password: string, station: string) => Promise<void>; onSignOut: () => void; onBack: () => void; onToggle: (item: Item) => void; onPrice: (item: Item, form: HTMLFormElement) => void; onAddCategory: (form: HTMLFormElement) => void; onAddItem: (event: FormEvent<HTMLFormElement>) => void; onAdvance: (order: Order) => void; onMarkCashPaid: (order: Order) => void; onToggleOrdering: () => void; onDeal: (event: FormEvent<HTMLFormElement>) => void; onDealToggle: (id: string) => void; onRefresh: () => void };
 function OwnerApp(props: OwnerProps) {
-  const [tab, setTab] = useState("Overview");
+  const initialTab = props.station === "cashier" ? "Cash receipts" : "Overview";
+  const [tab, setTab] = useState(initialTab);
   const [demoUsername, setDemoUsername] = useState("");
   const [demoPassword, setDemoPassword] = useState("");
   const [demoLoginError, setDemoLoginError] = useState("");
   const { user, categories, items, queue, deals, canManage, canToggle, canQueue } = props;
   const waiting = queue.filter((order) => ["SUBMITTED", "ACCEPTED", "PREPARING"].includes(order.status)).length;
-  const tabs = ["Overview", "Orders", "Orders history", "Menu", "Deals", ...(props.canTopUp ? ["Wallet top-ups", "Wallet top-up history"] : [])];
+  const tabs = props.station === "cashier" ? ["Cash receipts", "Wallet top-ups", "Wallet top-up history"] : ["Overview", "Orders", "Orders history", "Menu", "Deals"];
   return <div className="owner-app"><aside className="owner-sidebar"><button className="owner-logo" onClick={props.onBack}><CedarMark/><span>Cedar<span>Bite</span><small>CANTEEN CONSOLE</small></span></button><span className="sidebar-label">WORKSPACE</span>{tabs.map((name) => <button key={name} className={`sidebar-link ${tab === name ? "active" : ""}`} onClick={() => { setTab(name); if (name === "Orders history") props.onLoadHistory(); if (name === "Wallet top-up history") props.onLoadWalletTopUpHistory(); }}><span>{({Overview:"⌂",Orders:"▤", "Orders history":"◷",Menu:"☷",Deals:"✦", "Wallet top-ups":"＋", "Wallet top-up history":"≡"} as Record<string,string>)[name]}</span>{name}{name === "Orders" && waiting > 0 && <i>{waiting}</i>}</button>)}<div className="sidebar-spacer"/><div className="service-state"><span className="state-dot"/> <span><b>Canteen service</b><small>{props.orderingReason}</small></span></div><button className="back-store" onClick={props.onBack}>← Back to student menu</button></aside>
     <div className="owner-main"><header className="owner-topbar"><div><span className="owner-crumb">CEDARBITE <span>/</span> CANTEEN</span><h1>{({Overview:"Canteen overview",Orders:"Order management","Orders history":"Completed order history",Menu:"Menu management",Deals:"Deals & offers","Wallet top-ups":"Student wallet top-ups","Wallet top-up history":"Wallet top-up history"} as Record<string,string>)[tab] ?? "Canteen console"}</h1></div><div className="owner-top-actions"><button className="refresh-link" onClick={props.onRefresh}>↻ Refresh</button>{user ? <button className="owner-user" onClick={props.onSignOut}><span>{user.email.slice(0,1).toUpperCase()}</span>{user.email} · Sign out</button> : <button className="sign-button" onClick={props.onSignIn}>Sign in</button>}<button className="theme-toggle owner-theme-toggle" onClick={props.onToggleTheme} aria-label={`Switch to ${props.darkMode ? "light" : "dark"} mode`} title={props.darkMode ? "Switch to light mode" : "Switch to dark mode"}><span aria-hidden="true">{props.darkMode ? "☀" : "☾"}</span></button></div></header>
-    {!user ? <section className="owner-lock"><div className="lock-emblem"><CedarMark/></div><span className="section-kicker">CANTEEN DASHBOARD</span><h2>Welcome to the<br/><span>canteen console.</span></h2><p>Sign in with the canteen dashboard username and password to explore menu controls, deals, and order management.</p><form className="demo-signin-form" onSubmit={(event) => { event.preventDefault(); setDemoLoginError(""); void props.onDemoStaff(demoUsername, demoPassword).catch((error) => setDemoLoginError(error instanceof Error ? error.message : "Sign-in failed.")); }}><label>Username<input autoComplete="username" required value={demoUsername} onChange={(event) => setDemoUsername(event.target.value)} placeholder="manager"/></label><label>Password<input type="password" autoComplete="current-password" required value={demoPassword} onChange={(event) => setDemoPassword(event.target.value)} placeholder="••••••••"/></label>{demoLoginError && <p className="form-message error-message">{demoLoginError}</p>}<button className="blue-button">Log in to dashboard</button><small>Use the canteen credentials configured for this site. Shared orders and student IDs require a manager sign-in.</small></form><button className="back-to-store" onClick={props.onBack}>← Return to student menu</button></section> : !(canManage || canToggle || canQueue) ? <section className="owner-lock"><span className="section-kicker">STAFF WORKSPACE</span><h2>This account<br/><span>doesn’t have staff access.</span></h2><p>Use the separate canteen dashboard demo login to explore owner tools.</p><button className="blue-button" onClick={props.onSignOut}>Sign out and use canteen login</button><button className="back-to-store" onClick={props.onBack}>Return to student menu</button></section> : <>
+    {!user || sessionStorage.getItem(CANTEEN_ROLE_KEY) !== props.station ? <section className="owner-lock"><div className="lock-emblem"><CedarMark/></div><span className="section-kicker">{props.station === "cashier" ? "CASH DESK" : "ORDER CONTROL"}</span><h2>{props.station === "cashier" ? <>Cash desk<br/><span>staff sign-in.</span></> : <>Canteen order<br/><span>management.</span></>}</h2><p>Sign in with the username and password for this staff station.</p><form className="demo-signin-form" onSubmit={(event) => { event.preventDefault(); setDemoLoginError(""); void props.onDemoStaff(demoUsername, demoPassword, props.station).catch((error) => setDemoLoginError(error instanceof Error ? error.message : "Sign-in failed.")); }}><label>Username<input autoComplete="username" required value={demoUsername} onChange={(event) => setDemoUsername(event.target.value)} placeholder={props.station === "cashier" ? "cashdesk" : "manager"}/></label><label>Password<input type="password" autoComplete="current-password" required value={demoPassword} onChange={(event) => setDemoPassword(event.target.value)} placeholder="Enter station password"/></label>{demoLoginError && <p className="form-message error-message">{demoLoginError}</p>}<button className="blue-button">Log in to {props.station === "cashier" ? "cash desk" : "order control"}</button></form><button className="back-to-store" onClick={props.onBack}>← Return to student menu</button></section> : !(canManage || canToggle || canQueue || props.canTopUp) ? <section className="owner-lock"><span className="section-kicker">STAFF WORKSPACE</span><h2>This account<br/><span>doesn’t have staff access.</span></h2><p>Use the credentials assigned to this staff station.</p><button className="blue-button" onClick={props.onSignOut}>Sign out</button><button className="back-to-store" onClick={props.onBack}>Return to student menu</button></section> : <>
       <div className="owner-banner"><div><b>Canteen workspace · shared queue and availability</b><span>Pickup orders, menu items, prices, and availability sync across devices. Deals remain local. Payments are not processed.</span></div><button onClick={props.onToggleOrdering}>{props.orderingReason.includes("paused") ? "Resume ordering" : "Pause ordering"}</button></div>
       {tab === "Overview" && <section className="owner-content"><div className="metric-grid"><article><span>ACTIVE MENU ITEMS</span><b>{items.length}</b><small>Across {categories.length} menu categories</small></article><article><span>ORDERS TO FULFIL</span><b>{waiting}</b><small>{canQueue ? "Needs canteen attention" : "Queue access is restricted"}</small></article><article><span>AVAILABLE ITEMS</span><b>{items.filter((item) => item.available).length}</b><small>{items.filter((item) => !item.available).length} currently unavailable</small></article></div><div className="owner-columns"><section className="owner-panel"><div className="panel-heading"><div><span className="section-kicker">LIVE WORK</span><h2>Current orders</h2></div><button onClick={() => setTab("Orders")}>View all →</button></div>{canQueue ? queue.slice(0,4).map((order) => <QueueItem key={order.id} order={order} pending={props.queuePendingIds.includes(String(order.id))} onAdvance={props.onAdvance}/> ) : <p className="panel-empty">Your account doesn’t have queue access.</p>}{canQueue && !queue.length && <p className="panel-empty">No active orders yet.</p>}</section><section className="owner-panel"><div className="panel-heading"><div><span className="section-kicker">MENU STATUS</span><h2>Availability</h2></div><button onClick={() => setTab("Menu")}>Manage menu →</button></div>{items.slice(0,5).map((item) => <div className="mini-menu-row" key={item.id}><span className="mini-food">{item.name.toLowerCase().includes("burger") ? "🍔" : item.name.toLowerCase().includes("drink") ? "🥤" : "🍽️"}</span><span><b>{item.name.replace("[DEV SAMPLE] ", "")}</b><small>{item.price_display}</small></span><AvailabilitySwitch item={item} disabled={!canToggle || props.availabilityPending.includes(item.id)} onToggle={props.onToggle}/></div>)}</section></div><div className="owner-tip"><b>Getting started</b><span>Use the menu tab to add items and manage prices. Menu items and prices are examples for this presentation and should be confirmed with the canteen before any live service.</span></div></section>}
       {tab === "Orders" && <section className="owner-content"><div className="panel-heading"><div><span className="section-kicker">KITCHEN QUEUE</span><h2>Orders in progress</h2></div><span className="queue-live"><i/> Live updates · checks every 2 seconds</span></div>{canQueue && <PickupLookup queue={queue} pendingIds={props.queuePendingIds} onConfirm={props.onAdvance}/>} {canQueue ? queue.length ? <div className="queue-list">{queue.map((order) => <QueueItem key={order.id} order={order} pending={props.queuePendingIds.includes(String(order.id))} onAdvance={props.onAdvance}/>)}</div> : <div className="panel-empty large">The queue is clear. Place an order from the student menu to see it appear here.</div> : <div className="panel-empty large">Queue access is not enabled for your account.</div>}</section>}
+      {tab === "Cash receipts" && props.station === "cashier" && <section className="owner-content"><div className="panel-heading"><div><span className="section-kicker">PAY AT PICKUP</span><h2>Cash orders awaiting payment</h2></div><span className="queue-live"><i/> Shared cash desk queue</span></div>{queue.length ? <div className="queue-list">{queue.map((order) => <article className="queue-item" key={order.id}><div className="queue-number">{order.pickup_code}<small>Pickup number</small></div><div className="queue-details"><div><b>{human(order.status)} · {order.payment_status === "PAID" ? "Paid" : "Payment due"}</b><small>Student ID: {order.student_id || "Not available"}</small></div><p>{order.items.map((line, index) => <span key={`${order.id}-${index}`}>{line.quantity} × {line.name}</span>)}</p></div><div className="queue-amount">{order.total_display}</div>{order.payment_status !== "PAID" && <button className="blue-button queue-action" disabled={props.queuePendingIds.includes(String(order.id))} onClick={() => props.onMarkCashPaid(order)}>{props.queuePendingIds.includes(String(order.id)) ? "Saving…" : "Record cash received"}</button>}</article>)}</div> : <div className="panel-empty large">No unpaid cash orders right now.</div>}</section>}
       {tab === "Orders history" && <section className="owner-content"><div className="panel-heading"><div><span className="section-kicker">COMPLETED COLLECTIONS</span><h2>Orders history</h2></div><button onClick={props.onLoadHistory}>↻ Refresh history</button></div>{props.orderHistory.length ? <div className="queue-list">{props.orderHistory.map((order) => <article className="queue-item history-item" key={order.id}><div className="queue-number">{order.pickup_code}<small>Pickup number</small></div><div className="queue-details"><div><b>Collected</b><small>{new Date(order.completed_at ?? order.created_at).toLocaleString("en-PK", { timeZone: "Asia/Karachi" })}</small></div><p>{order.items.map((line, index) => <span key={`${order.id}-${index}`}>{line.quantity} × {line.name}</span>)}</p><small className="queue-student-id">Student ID: {order.student_id || "Not available"}</small></div><div className="queue-amount">{order.total_display}</div></article>)}</div> : <div className="panel-empty large">No completed orders have been recorded yet.</div>}</section>}
       {tab === "Menu" && <section className="owner-content"><div className="owner-columns"><section className="owner-panel"><div className="panel-heading"><div><span className="section-kicker">CATALOGUE</span><h2>Menu items</h2></div><span className="queue-live">{items.length} items</span></div>{items.map((item) => <div className="menu-admin-row" key={item.id}><div className="menu-admin-name"><span className="mini-food">{item.name.toLowerCase().includes("burger") ? "🍔" : item.name.toLowerCase().includes("drink") ? "🥤" : "🍽️"}</span><span><b>{item.name}</b><small>{item.category} · {item.quick_allowed ? "Quick pickup" : "Prepared"}</small></span></div><form className="price-edit" onSubmit={(event) => { event.preventDefault(); props.onPrice(item, event.currentTarget); }}><span>Rs</span><input aria-label={`Price for ${item.name}`} name="price" type="number" min="0" step="1" defaultValue={Math.round(item.price_paisa / 100)} disabled={!canManage || props.menuMutationPending}/><button disabled={!canManage || props.menuMutationPending}>Save</button></form><AvailabilitySwitch item={item} disabled={!canToggle || props.availabilityPending.includes(item.id)} onToggle={props.onToggle}/></div>)}{!items.length && <p className="panel-empty">No menu items yet.</p>}</section><div className="owner-form-stack"><section className="owner-panel form-panel"><span className="section-kicker">ADD TO MENU</span><h2>New item</h2>{canManage ? <form className="owner-form" onSubmit={(event) => void props.onAddItem(event)}><label>Item name<input name="name" required maxLength={120} placeholder="e.g. Chicken burger"/></label><label>Category<select name="category_id" required defaultValue="">{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Description<textarea name="description" rows={2} placeholder="What should students know?"/></label><label>Price in PKR<input name="price" type="number" min="0" step="1" required placeholder="350"/></label><div className="check-row"><label><input type="checkbox" name="quick"/> Quick pickup</label><label><input type="checkbox" name="scheduled" defaultChecked/> Prepared order</label></div><label>Preparation time (minutes)<input name="prep_minutes" type="number" min="0" max="240" placeholder="Optional"/></label>{props.itemMessage && <p className="form-message">{props.itemMessage}</p>}<button className="blue-button" disabled={props.itemAddPending || props.menuMutationPending}>{props.itemAddPending ? "Adding…" : "Add menu item"}</button></form> : <p className="panel-empty">Only menu managers can add or edit menu items.</p>}</section><section className="owner-panel form-panel"><span className="section-kicker">ORGANISE MENU</span><h2>New category</h2>{canManage ? <form className="inline-category" onSubmit={(event) => { event.preventDefault(); props.onAddCategory(event.currentTarget); }}><input name="category" required maxLength={80} placeholder="e.g. Hot drinks"/><button className="blue-button" disabled={props.menuMutationPending}>Add category</button></form> : <p className="panel-empty">Manager access required.</p>}</section></div></div><p className="sample-reminder">Menu names, ingredients, and prices shown here are examples. Replace them with the confirmed canteen list before live use.</p></section>}
       {tab === "Deals" && <section className="owner-content"><div className="owner-columns"><section className="owner-panel"><div className="panel-heading"><div><span className="section-kicker">PROMOTIONS</span><h2>Featured deals</h2></div></div>{deals.map((deal) => <div className="deal-admin-row" key={deal.id}><span className="deal-admin-icon">✦</span><span><b>{deal.title}</b><small>{deal.description}</small></span><button className={deal.active ? "deal-switch enabled" : "deal-switch"} onClick={() => props.onDealToggle(deal.id)}>{deal.active ? "Shown" : "Hidden"}</button></div>)}</section><section className="owner-panel form-panel"><span className="section-kicker">CREATE A PROMOTION</span><h2>New deal</h2><p className="sample-reminder">Choose the items students can add from this deal. Prices stay at the listed menu price.</p>{canManage ? <form className="owner-form" onSubmit={props.onDeal}><label>Deal title<input name="title" required maxLength={80} placeholder="e.g. Break-time bundle"/></label><label>Short description<textarea name="description" required rows={3} maxLength={220} placeholder="What’s included?"/></label><fieldset className="deal-item-picker"><legend>Items in this deal</legend>{props.items.filter((item) => item.available).map((item) => <label key={item.id}><input type="checkbox" name="item_ids" value={item.id}/><span>{item.name}</span><small>{item.quick_allowed ? "Quick" : "Scheduled"} · {item.price_display}</small></label>)}</fieldset>{props.dealMessage && <p className="form-message">{props.dealMessage}</p>}<button className="blue-button">Add offer</button></form> : <p className="panel-empty">Manager access required.</p>}</section></div></section>}
@@ -704,6 +785,44 @@ function PickupLookup({ queue, pendingIds, onConfirm }: { queue: Order[]; pendin
   const [searched, setSearched] = useState("");
   const match = searched ? queue.find((order) => order.pickup_code.toUpperCase() === searched) : undefined;
   return <section className="pickup-lookup"><div><span className="section-kicker">COLLECTION CHECK</span><h3>Enter pickup ID</h3><p>Find the matching order before handing it over.</p></div><form onSubmit={(event) => { event.preventDefault(); setSearched(value.trim().toUpperCase()); }}><label htmlFor="pickup-id">Pickup ID</label><div><input id="pickup-id" value={value} onChange={(event) => setValue(event.target.value)} placeholder="Enter the number shown to the student" required/><button className="blue-button" type="submit">Find order</button></div></form>{searched && (match ? <div className="pickup-match" role="status"><b>Order {match.pickup_code} · {human(match.status)}</b><span>Student ID: {match.student_id || "Not available"}</span><span>{match.items.map((item) => `${item.quantity} × ${item.name}`).join(" · ")}</span>{match.status === "READY" ? <button className="blue-button" disabled={pendingIds.includes(String(match.id))} onClick={() => onConfirm(match)}>{pendingIds.includes(String(match.id)) ? "Confirming…" : "Confirm pickup"}</button> : <small>Pickup can be confirmed after the order is marked ready.</small>}</div> : <p className="pickup-not-found" role="status">No active order matches pickup ID {searched}. Refresh the queue and check the number.</p>)}</section>;
+}
+
+function StationDirectory({ onNavigate, onBack }: { onNavigate: (page: Page) => void; onBack: () => void }) {
+  const stations: { title: string; path: Page; description: string; icon: string }[] = [
+    { title: "Counter", path: "counter", description: "Place in-person orders for students and send them into the shared queue.", icon: "01" },
+    { title: "Cash desk", path: "cashdesk", description: "Record wallet cash top-ups and cash received for pay-at-pickup orders.", icon: "02" },
+    { title: "Order manager", path: "order-manager", description: "Accept orders, manage preparation progress, menu availability, and order history.", icon: "03" },
+    { title: "Kitchen monitor", path: "kitchen", description: "Show only orders that the order manager has marked as preparing.", icon: "04" },
+  ];
+  return <main className="stations-page"><button className="back-to-store" onClick={onBack}>← Student menu</button><span className="section-kicker">CEDARBITE STAFF</span><h1>Choose your station.</h1><p>Each station has its own sign-in and only the tools needed for that role.</p><div className="station-cards">{stations.map((station) => <button className="station-card" key={station.path} onClick={() => onNavigate(station.path)}><span>{station.icon}</span><h2>{station.title}</h2><p>{station.description}</p><b>Open station <i>↗</i></b></button>)}</div></main>;
+}
+
+function CounterStation({ user, items, windows, pending, onSignIn, onSignOut, onCreate }: { user: User | null; items: Item[]; windows: PickupWindow[]; pending: boolean; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void; onCreate: (studentId: string, quantities: Record<number, number>, mode: "QUICK" | "SCHEDULED", windowId: string) => Promise<Order> }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [quantities, setQuantities] = useState<Record<number, number>>({});
+  const [mode, setMode] = useState<"QUICK" | "SCHEDULED">("QUICK");
+  const [windowId, setWindowId] = useState("");
+  const [pickupId, setPickupId] = useState("");
+  const [success, setSuccess] = useState("");
+  const stationUser = user?.role === "DEMO_CANTEEN" && sessionStorage.getItem(CANTEEN_ROLE_KEY) === "order_taker";
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(""); setSuccess("");
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const studentId = String(form.get("student_id") ?? "").trim();
+    if (!/^\d{7}$/.test(studentId)) { setError("Enter the student’s 7-digit Cedar ID."); return; }
+    try { const order = await onCreate(studentId, quantities, mode, windowId); setPickupId(order.pickup_code); setSuccess("In-person order sent to the canteen queue."); setQuantities({}); setWindowId(""); formElement.reset(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "The order could not be placed."); }
+  }
+  return <main className="stations-page station-workspace"><div className="station-topline"><a href="/stations">← All staff stations</a>{stationUser && <button onClick={onSignOut}>Sign out</button>}</div><span className="section-kicker">COUNTER · IN-PERSON ORDERS</span><h1>Counter station</h1>{!stationUser ? <form className="owner-lock station-login" onSubmit={(event) => { event.preventDefault(); setError(""); void onSignIn(username, password).catch((reason) => setError(reason instanceof Error ? reason.message : "Sign-in failed.")); }}><h2>Staff sign-in</h2><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required placeholder="counter" autoComplete="username"/></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} required type="password" autoComplete="current-password"/></label>{error && <p className="form-message error-message">{error}</p>}<button className="blue-button">Open counter</button></form> : <form className="counter-order-form" onSubmit={(event) => void submit(event)}><label>Student ID<input name="student_id" required inputMode="numeric" pattern="[0-9]{7}" minLength={7} maxLength={7} placeholder="7-digit Cedar student ID"/></label><div className="counter-mode"><button type="button" className={mode === "QUICK" ? "selected" : ""} onClick={() => { setMode("QUICK"); setWindowId(""); }}>Quick Order</button><button type="button" className={mode === "SCHEDULED" ? "selected" : ""} onClick={() => setMode("SCHEDULED")}>Scheduled Order</button></div>{mode === "SCHEDULED" && <label>Pickup window<select value={windowId} onChange={(event) => setWindowId(event.target.value)} required><option value="">Choose an available 10-minute slot</option>{windows.slice(0, 6).map((slot) => <option value={String(slot.id)} key={slot.id}>{new Date(slot.start_at).toLocaleString("en-PK", { timeZone: "Asia/Karachi", hour: "numeric", minute: "2-digit" })}–{new Date(slot.end_at).toLocaleTimeString("en-PK", { timeZone: "Asia/Karachi", hour: "numeric", minute: "2-digit" })}</option>)}</select></label>}<h2>Order items</h2><div className="counter-item-list">{items.filter((item) => item.available && (mode === "QUICK" ? item.quick_allowed : item.scheduled_allowed)).map((item) => <label key={item.id}><span><b>{item.name}</b><small>{item.price_display}</small></span><input type="number" min="0" max="20" value={quantities[item.id] ?? 0} onChange={(event) => setQuantities((current) => ({ ...current, [item.id]: Number(event.target.value) }))} aria-label={`Quantity for ${item.name}`}/></label>)}</div>{error && <p className="form-message error-message" role="alert">{error}</p>}{success && <div className="counter-order-success" role="status"><b>{success}</b><span>Pickup number: <strong>{pickupId}</strong></span><small>Payment due in cash at pickup.</small></div>}<button className="blue-button" disabled={pending}>{pending ? "Sending order…" : "Place in-person order"}</button></form>}</main>;
+}
+
+function KitchenStation({ user, queue, pendingIds, onSignIn, onSignOut }: { user: User | null; queue: Order[]; pendingIds: string[]; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void }) {
+  const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState("");
+  const stationUser = user?.role === "DEMO_CANTEEN" && sessionStorage.getItem(CANTEEN_ROLE_KEY) === "kitchen";
+  return <main className="kitchen-screen"><header><div><span className="section-kicker">CEDARBITE · KITCHEN</span><h1>Preparing now</h1><p>Only orders marked “Start preparing” appear here.</p></div>{stationUser && <button onClick={onSignOut}>Sign out</button>}</header>{!stationUser ? <form className="owner-lock station-login" onSubmit={(event) => { event.preventDefault(); setError(""); void onSignIn(username, password).catch((reason) => setError(reason instanceof Error ? reason.message : "Sign-in failed.")); }}><h2>Kitchen monitor sign-in</h2><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required placeholder="kitchenmonitor" autoComplete="username"/></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} required type="password" autoComplete="current-password"/></label>{error && <p className="form-message error-message">{error}</p>}<button className="blue-button">Open kitchen monitor</button></form> : queue.length ? <div className="kitchen-ticket-grid">{queue.filter((order) => order.status === "PREPARING").map((order) => <article className="kitchen-ticket" key={order.id}><span>PREPARING</span><h2>{order.pickup_code}</h2><small>{order.mode === "SCHEDULED" && order.pickup_window ? new Date(order.pickup_window.start_at).toLocaleTimeString("en-PK", { timeZone: "Asia/Karachi", hour: "numeric", minute: "2-digit" }) : "Quick pickup"}</small><ul>{order.items.map((item, index) => <li key={`${item.name}-${index}`}><b>{item.quantity}×</b> {item.name}</li>)}</ul>{pendingIds.includes(String(order.id)) && <small>Updating…</small>}</article>)}</div> : <div className="kitchen-empty">No orders are being prepared right now.</div>}</main>;
 }
 
 function AvailabilitySwitch({ item, disabled, onToggle }: { item: Item; disabled: boolean; onToggle: (item: Item) => void }) { return <button type="button" className={`availability-switch ${item.available ? "is-on" : ""}`} disabled={disabled} onClick={() => onToggle(item)} aria-label={`${item.available ? "Mark unavailable" : "Mark available"}: ${item.name}`}><span/><small>{disabled ? "Saving…" : item.available ? "Available" : "Unavailable"}</small></button>; }

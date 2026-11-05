@@ -6,6 +6,31 @@
   directory = "frontend/netlify/functions"
 
 [[redirects]]
+  from = "/stations"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/counter"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/cash-desk"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/order-manager"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/kitchen"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
   from = "/owner"
   to = "/index.html"
   status = 200

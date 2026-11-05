@@ -20,8 +20,8 @@ function safeEqual(left, right) {
 const staffSettings = {
   order_manager: { username: () => process.env.CANTEEN_DASHBOARD_USERNAME || "manager", password: () => process.env.CANTEEN_DASHBOARD_PASSWORD },
   order_taker: { username: () => process.env.CANTEEN_COUNTER_USERNAME || "counter", password: () => process.env.CANTEEN_COUNTER_PASSWORD },
-  cashier: { username: () => process.env.CANTEEN_CASHIER_USERNAME || "cashier", password: () => process.env.CANTEEN_CASHIER_PASSWORD },
-  kitchen: { username: () => process.env.CANTEEN_KITCHEN_USERNAME || "kitchen", password: () => process.env.CANTEEN_KITCHEN_PASSWORD },
+  cashier: { username: () => process.env.CANTEEN_CASHIER_USERNAME || "cashdesk", password: () => process.env.CANTEEN_CASHIER_PASSWORD },
+  kitchen: { username: () => process.env.CANTEEN_KITCHEN_USERNAME || "kitchenmonitor", password: () => process.env.CANTEEN_KITCHEN_PASSWORD },
 };
 
 function staffConfigured(station) {
@@ -79,7 +79,7 @@ export default async (request) => {
       }
       if (["queue", "cash-desk", "kitchen", "history", "wallet-history"].includes(url.searchParams.get("scope"))) {
         const scope = url.searchParams.get("scope");
-        const station = scope === "cash-desk" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
+        const station = scope === "cash-desk" || scope === "wallet-history" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
         if (!staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
         if (!isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
         await migrateLegacyQueue();
