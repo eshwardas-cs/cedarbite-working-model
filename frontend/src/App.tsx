@@ -186,9 +186,10 @@ export default function App() {
     } catch { /* The static menu remains usable if shared availability is temporarily unavailable. */ }
   }, [request, user?.role]);
 
+  const userRole = user?.role;
   const loadMenu = useCallback(async (manage = false) => {
     const revisionAtStart = menuRevisionRef.current;
-    if (user?.role.startsWith("DEMO_")) {
+    if (userRole?.startsWith("DEMO_")) {
       try {
         const shared = await request<{ categories: Category[] | null }>(`${SHARED_DATA_URL}?scope=menu`, { cache: "no-store" });
         if (shared.categories?.length && revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
@@ -202,11 +203,11 @@ export default function App() {
       if (revisionAtStart !== menuRevisionRef.current || availabilityPendingRef.current.size > 0) return;
       const saved = localStorage.getItem("cedarbite-demo-menu");
       if (saved) { try { setCategories(JSON.parse(saved) as Category[]); setMenuError(""); void loadSharedAvailability(); } catch { localStorage.removeItem("cedarbite-demo-menu"); } return; }
-      if (user.role === "DEMO_CANTEEN") { setCategories(sampleMenu); void loadSharedAvailability(); return; }
+      if (userRole === "DEMO_CANTEEN") { setCategories(sampleMenu); void loadSharedAvailability(); return; }
     }
     try { const result = await request<{ categories: Category[] }>(manage ? "/api/menu/manage" : "/api/menu"); if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) { setCategories(result.categories); setMenuError(""); } }
     catch { if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) { setCategories(sampleMenu); setMenuError(""); } }
-  }, [loadSharedAvailability, request, user]);
+  }, [loadSharedAvailability, request, userRole]);
   const loadQueue = useCallback(async () => {
     if (canteenStation === "order_taker") return;
     if (queueLoadInFlightRef.current) { queueRefreshRequestedRef.current = true; return; }
@@ -402,11 +403,18 @@ export default function App() {
     const orderId = String(order.id);
     if (queueMutationPendingRef.current.has(orderId)) return;
     queueMutationPendingRef.current.add(orderId);
+    queueRevisionRef.current += 1;
     setQueuePendingIds((current) => [...new Set([...current, orderId])]);
     try {
-      await request(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "mark-cash-paid", order_id: orderId }) });
+      const result = await request<{ order?: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "mark-cash-paid", order_id: orderId }) });
+      if (!result.order || result.order.payment_status !== "PAID") throw new Error("The cash desk did not confirm this receipt.");
+      queueRevisionRef.current += 1;
+      setQueue((current) => current.filter((entry) => String(entry.id) !== orderId));
       setToast(`Cash received for order ${order.pickup_code}.`);
-    } catch (error) { setToast(error instanceof Error ? error.message : "Cash receipt was not recorded."); }
+    } catch (error) {
+      queueRevisionRef.current += 1;
+      setToast(error instanceof Error ? error.message : "Cash receipt was not recorded.");
+    }
     finally {
       queueMutationPendingRef.current.delete(orderId);
       setQueuePendingIds((current) => current.filter((id) => id !== orderId));
