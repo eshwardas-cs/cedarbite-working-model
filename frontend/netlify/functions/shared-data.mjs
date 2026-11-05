@@ -11,6 +11,62 @@ const store = getStore({
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
 const transitions = { SUBMITTED: "PREPARING", ACCEPTED: "READY", PREPARING: "READY", READY: "COLLECTED" };
+const reportDayKey = (value) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
+const reportHour = (value) => Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Karachi", hour: "2-digit", hourCycle: "h23" }).format(value));
+const orderDay = (value) => Number.isFinite(Date.parse(value)) ? reportDayKey(new Date(value)) : "";
+function validReportDay(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+function orderTotalPaisa(order) {
+  if (Number.isSafeInteger(order.total_paisa) && order.total_paisa >= 0) return order.total_paisa;
+  const match = String(order.total_display ?? "").match(/([\d,]+)(?:\.([\d]{1,2}))?/);
+  if (!match) return 0;
+  return Number(match[1].replaceAll(",", "")) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+}
+function dailySalesSummary(date, orders) {
+  const unique = [...new Map(orders.filter((order) => order?.id != null).map((order) => [String(order.id), order])).values()];
+  const placed = unique.filter((order) => orderDay(order.created_at) === date);
+  const paid = unique.filter((order) => order.payment_status === "PAID" && orderDay(order.cash_received_at || order.paid_at || order.created_at) === date);
+  const itemCounts = new Map();
+  const methods = new Map();
+  const hourly = new Map();
+  let paidSalesPaisa = 0;
+  let paidUnits = 0;
+  for (const order of paid) {
+    const timestamp = order.cash_received_at || order.paid_at || order.created_at;
+    const amount = orderTotalPaisa(order);
+    paidSalesPaisa += amount;
+    const method = String(order.payment_method || "unknown").toLowerCase();
+    const methodStats = methods.get(method) || { method, count: 0, amount_paisa: 0 };
+    methodStats.count += 1;
+    methodStats.amount_paisa += amount;
+    methods.set(method, methodStats);
+    const hour = reportHour(new Date(timestamp));
+    hourly.set(hour, (hourly.get(hour) || 0) + amount);
+    for (const line of Array.isArray(order.items) ? order.items : []) {
+      if (typeof line.name !== "string" || !Number.isInteger(line.quantity) || line.quantity < 1) continue;
+      const entry = itemCounts.get(line.name) || { name: line.name, quantity: 0 };
+      entry.quantity += line.quantity;
+      paidUnits += line.quantity;
+      itemCounts.set(line.name, entry);
+    }
+  }
+  return {
+    date,
+    generated_at: new Date().toISOString(),
+    orders_placed: placed.length,
+    placed_order_value_paisa: placed.reduce((sum, order) => sum + orderTotalPaisa(order), 0),
+    pending_payment_orders: placed.filter((order) => order.payment_status !== "PAID").length,
+    paid_orders: paid.length,
+    paid_sales_paisa: paidSalesPaisa,
+    units_sold: paidUnits,
+    items_sold: [...itemCounts.values()].sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name)),
+    payment_methods: [...methods.values()].sort((a, b) => b.amount_paisa - a.amount_paisa),
+    hourly_sales: [...hourly.entries()].map(([hour, amount_paisa]) => ({ hour, amount_paisa })).sort((a, b) => a.hour - b.hour),
+  };
+}
 function safeEqual(left, right) {
   const a = Buffer.from(left ?? "");
   const b = Buffer.from(right ?? "");
@@ -139,6 +195,35 @@ export default async (request) => {
       if (url.searchParams.get("scope") === "pickup-windows") {
         const orders = await readByPrefix("queue/");
         return reply({ windows: listPickupWindows(orders) });
+      }
+      if (["sales-dates", "sales-summary"].includes(url.searchParams.get("scope"))) {
+        if (!await staffConfigured("order_manager")) return reply({ error: "The order manager login is not configured yet." }, 503);
+        if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to the order manager station to view sales summaries." }, 401);
+        await migrateLegacyQueue();
+        const today = reportDayKey(new Date());
+        const [queue, history] = await Promise.all([readByPrefix("queue/"), readByPrefix("history/")]);
+        const allOrders = [...queue, ...history];
+        if (url.searchParams.get("scope") === "sales-dates") {
+          const reports = await readByPrefix("sales/daily/");
+          const dates = new Set([today, ...reports.map((report) => report.date)]);
+          for (const order of allOrders) {
+            const createdDate = orderDay(order.created_at);
+            if (createdDate) dates.add(createdDate);
+            if (order.payment_status === "PAID") {
+              const paidDate = orderDay(order.cash_received_at || order.paid_at || order.created_at);
+              if (paidDate) dates.add(paidDate);
+            }
+          }
+          return reply({ dates: [...dates].filter((date) => validReportDay(date) && date <= today).sort((a, b) => b.localeCompare(a)) });
+        }
+        const date = url.searchParams.get("date");
+        if (!validReportDay(date) || date > today) return reply({ error: "Choose a valid report date up to today." }, 400);
+        const reportKey = `sales/daily/${date}`;
+        const savedReport = await readJSON(reportKey);
+        if (date !== today && savedReport) return reply({ report: savedReport });
+        const report = dailySalesSummary(date, allOrders);
+        await store.setJSON(reportKey, report);
+        return reply({ report });
       }
       if (["queue", "cash-desk", "kitchen", "history", "wallet-history"].includes(url.searchParams.get("scope"))) {
         const scope = url.searchParams.get("scope");
