@@ -10,7 +10,7 @@ const store = getStore({
 
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
-const transitions = { SUBMITTED: "ACCEPTED", ACCEPTED: "PREPARING", PREPARING: "READY", READY: "COLLECTED" };
+const transitions = { SUBMITTED: "PREPARING", ACCEPTED: "READY", PREPARING: "READY", READY: "COLLECTED" };
 function safeEqual(left, right) {
   const a = Buffer.from(left ?? "");
   const b = Buffer.from(right ?? "");
