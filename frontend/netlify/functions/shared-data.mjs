@@ -17,16 +17,27 @@ function safeEqual(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function managerConfigured() {
-  return Boolean(process.env.CANTEEN_DASHBOARD_PASSWORD?.trim());
+const staffSettings = {
+  order_manager: { username: () => process.env.CANTEEN_DASHBOARD_USERNAME || "manager", password: () => process.env.CANTEEN_DASHBOARD_PASSWORD },
+  order_taker: { username: () => process.env.CANTEEN_COUNTER_USERNAME || "counter", password: () => process.env.CANTEEN_COUNTER_PASSWORD },
+  cashier: { username: () => process.env.CANTEEN_CASHIER_USERNAME || "cashier", password: () => process.env.CANTEEN_CASHIER_PASSWORD },
+  kitchen: { username: () => process.env.CANTEEN_KITCHEN_USERNAME || "kitchen", password: () => process.env.CANTEEN_KITCHEN_PASSWORD },
+};
+
+function staffConfigured(station) {
+  return Boolean(staffSettings[station]?.password()?.trim());
 }
 
-function isManager(request) {
-  return managerConfigured() && safeEqual(
-    request.headers.get("x-canteen-password"),
-    process.env.CANTEEN_DASHBOARD_PASSWORD,
-  );
+function isStaff(request, station) {
+  const config = staffSettings[station];
+  return Boolean(config && staffConfigured(station) && request.headers.get("x-canteen-role") === station &&
+    safeEqual(request.headers.get("x-canteen-username"), config.username()) &&
+    safeEqual(request.headers.get("x-canteen-password"), config.password()));
 }
+
+const managerConfigured = () => staffConfigured("order_manager");
+const isManager = (request) => isStaff(request, "order_manager");
+const stationLabel = { order_manager: "order control", order_taker: "counter orders", cashier: "cash desk", kitchen: "kitchen monitor" };
 
 async function readByPrefix(prefix) {
   const { blobs } = await store.list({ prefix });
@@ -55,18 +66,27 @@ export default async (request) => {
       }
       if (url.searchParams.get("scope") === "menu") {
         const menu = await store.get("menu/catalog", { type: "json", consistency: "strong" });
-        return reply({ categories: Array.isArray(menu?.categories) ? menu.categories : null });
+        if (!Array.isArray(menu?.categories)) return reply({ categories: null });
+        const { blobs } = await store.list({ prefix: "availability/" });
+        const pairs = await Promise.all(blobs.map(async ({ key }) => [key.slice("availability/".length), await store.get(key, { type: "json", consistency: "strong" })]));
+        const availability = Object.fromEntries(pairs.filter(([, value]) => typeof value === "boolean"));
+        const categories = menu.categories.map((category) => ({ ...category, items: category.items.map((item) => ({ ...item, available: availability[String(item.id)] ?? item.available })) }));
+        return reply({ categories });
       }
       if (url.searchParams.get("scope") === "pickup-windows") {
         const orders = await readByPrefix("queue/");
         return reply({ windows: listPickupWindows(orders) });
       }
-      if (url.searchParams.get("scope") === "queue") {
-        if (!managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
-        if (!isManager(request)) return reply({ error: "Canteen sign-in is required to view orders." }, 401);
+      if (["queue", "cash-desk", "kitchen"].includes(url.searchParams.get("scope"))) {
+        const scope = url.searchParams.get("scope");
+        const station = scope === "cash-desk" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
+        if (!staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
+        if (!isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
         await migrateLegacyQueue();
-        const orders = await readByPrefix("queue/");
-        orders.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+        let orders = await readByPrefix("queue/");
+        if (scope === "cash-desk") orders = orders.filter((order) => order.payment_method === "cash" && order.payment_status !== "PAID" && order.status !== "COLLECTED");
+        if (scope === "kitchen") orders = orders.filter((order) => order.status === "PREPARING").map(({ student_id, payment_method, payment_status, ...order }) => order);
+        orders.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
         return reply({ orders: orders.slice(0, 100) });
       }
       return reply({ error: "Unknown request." }, 404);
@@ -79,12 +99,12 @@ export default async (request) => {
     try { body = JSON.parse(raw); } catch { return reply({ error: "Invalid JSON." }, 400); }
 
     if (body.action === "login") {
-      if (!managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
-      const expectedUser = process.env.CANTEEN_DASHBOARD_USERNAME || "manager";
-      if (!safeEqual(String(body.username ?? ""), expectedUser) || !safeEqual(String(body.password ?? ""), process.env.CANTEEN_DASHBOARD_PASSWORD)) {
-        return reply({ error: "The canteen username or password is incorrect." }, 401);
-      }
-      return reply({ ok: true });
+      const station = typeof body.station === "string" ? body.station : "order_manager";
+      const config = staffSettings[station];
+      if (!config) return reply({ error: "Choose a valid canteen station." }, 400);
+      if (!staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet. Add its password in Netlify environment variables.` }, 503);
+      if (!safeEqual(String(body.username ?? "").trim(), config.username()) || !safeEqual(String(body.password ?? ""), config.password())) return reply({ error: "That station username or password is incorrect." }, 401);
+      return reply({ ok: true, station, username: config.username() });
     }
 
     if (body.action === "create-order") {
@@ -115,6 +135,9 @@ export default async (request) => {
         items: order.items.map(({ item_id, ...item }) => ({ ...item, item_id })),
         waiting_minutes: 0,
         student_id: order.student_id == null ? null : String(order.student_id),
+        source: "ONLINE",
+        payment_method: ["cash", "wallet", "easypaisa", "jazzcash", "bank", "card"].includes(order.payment_method) ? order.payment_method : "cash",
+        payment_status: order.payment_method === "cash" ? "UNPAID" : "PENDING",
       };
       await store.setJSON(`queue/${saved.id}`, saved);
       const studentOrder = { ...saved };
@@ -122,8 +145,58 @@ export default async (request) => {
       return reply({ order: studentOrder }, 201);
     }
 
+    if (body.action === "create-counter-order") {
+      if (!staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
+      if (!isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to place an in-person order." }, 401);
+      const order = body.order;
+      if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
+      if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
+      if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead." }, 400);
+      if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
+      if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
+      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) return reply({ error: "Order items are invalid." }, 400);
+      const method = order.payment_method === "wallet" ? "wallet" : "cash";
+      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_display: typeof order.total_display === "string" ? order.total_display.slice(0, 40) : "", pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: order.items.map(({ item_id, ...item }) => ({ ...item, item_id })), waiting_minutes: 0, student_id: order.student_id == null ? null : String(order.student_id), payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
+      await store.setJSON(`queue/${saved.id}`, saved);
+      return reply({ order: saved }, 201);
+    }
+
+    if (body.action === "cash-topup") {
+      if (!staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
+      if (!isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record a top-up." }, 401);
+      const student_id = String(body.student_id ?? "");
+      const amount_paisa = Number(body.amount_paisa);
+      if (!/^\d{7}$/.test(student_id) || !Number.isSafeInteger(amount_paisa) || amount_paisa < 5000 || amount_paisa > 500000) return reply({ error: "Enter a 7-digit student ID and a cash amount from Rs 50 to Rs 5,000." }, 400);
+      const reference = String(body.idempotency_key ?? "");
+      if (!/^[a-f0-9-]{20,80}$/i.test(reference)) return reply({ error: "A valid transaction reference is required." }, 400);
+      const referenceKey = `wallet-topups/${reference}`;
+      const duplicate = await store.get(referenceKey, { type: "json", consistency: "strong" });
+      const walletKey = `wallets/${student_id}`;
+      const wallet = await store.get(walletKey, { type: "json", consistency: "strong" }) || { balance_paisa: 0, entries: [] };
+      if (duplicate) return reply({ student_id, balance_paisa: wallet.balance_paisa, entry: duplicate, duplicate: true });
+      const entry = { id: reference, student_id, kind: "credit", amount_paisa, method: "cash_at_counter", label: String(body.note ?? "Cash wallet top-up").slice(0, 160), created_at: new Date().toISOString(), recorded_by: request.headers.get("x-canteen-username") || "cashier" };
+      const updated = { balance_paisa: wallet.balance_paisa + amount_paisa, entries: [entry, ...(Array.isArray(wallet.entries) ? wallet.entries : [])].slice(0, 200) };
+      await store.setJSON(walletKey, updated);
+      await store.setJSON(referenceKey, entry);
+      return reply({ student_id, balance_paisa: updated.balance_paisa, entry, duplicate: false }, 201);
+    }
+
+    if (body.action === "mark-cash-paid") {
+      if (!staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
+      if (!isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
+      const orderId = String(body.order_id ?? "");
+      const key = `queue/${orderId}`;
+      const order = await store.get(key, { type: "json", consistency: "strong" });
+      if (!order) return reply({ error: "Order not found." }, 404);
+      if (order.payment_method !== "cash") return reply({ error: "This order is not marked for cash payment." }, 409);
+      if (order.payment_status === "PAID") return reply({ order, duplicate: true });
+      const updated = { ...order, payment_status: "PAID", cash_received_at: new Date().toISOString(), cash_received_by: request.headers.get("x-canteen-username") || "cashier" };
+      await store.setJSON(key, updated);
+      return reply({ order: updated });
+    }
+
     if (!managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
-    if (!isManager(request)) return reply({ error: "Canteen sign-in is required to change shared data." }, 401);
+    if (!isManager(request)) return reply({ error: "Sign in to the order control station to change shared data." }, 401);
 
     if (body.action === "set-menu") {
       const categories = body.categories;
@@ -151,6 +224,7 @@ export default async (request) => {
       const key = `queue/${body.order_id}`;
       const order = await store.get(key, { type: "json", consistency: "strong" });
       if (!order) return reply({ error: "Order not found." }, 404);
+      if (order.status === body.status) return reply({ order, duplicate: true });
       if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
       const updated = { ...order, status: body.status };
       if (body.status === "COLLECTED") await store.delete(key);
