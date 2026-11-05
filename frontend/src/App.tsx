@@ -267,7 +267,7 @@ export default function App() {
       const path = user?.role === "DEMO_CANTEEN" ? `${SHARED_DATA_URL}?scope=${scope}` : "/api/queue";
       const result = await request<{ orders: Order[] }>(path, { cache: "no-store" });
       if (revision === queueRevisionRef.current) setQueue(result.orders);
-    } catch (error) { if (["owner", "order-manager", "cashdesk", "kitchen"].includes(page)) setToast(error instanceof Error ? error.message : "Queue unavailable."); }
+    } catch { /* Keep the last loaded queue visible without a recurring popup during refresh failures. */ }
     finally {
       queueLoadInFlightRef.current = false;
       if (queueRefreshRequestedRef.current) {
