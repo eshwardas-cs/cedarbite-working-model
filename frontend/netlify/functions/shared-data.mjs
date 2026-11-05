@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
+import { validScheduledPickupWindow } from "./pickup-window-validation.mjs";
 
 const store = getStore({
   name: "cedarbite-shared-pilot",
@@ -10,7 +11,6 @@ const store = getStore({
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
 const transitions = { SUBMITTED: "ACCEPTED", ACCEPTED: "PREPARING", PREPARING: "READY", READY: "COLLECTED" };
-
 function safeEqual(left, right) {
   const a = Buffer.from(left ?? "");
   const b = Buffer.from(right ?? "");
@@ -86,6 +86,9 @@ export default async (request) => {
     if (body.action === "create-order") {
       const order = body.order;
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
+      if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
+      if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
+      if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
       if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) return reply({ error: "Order items are invalid." }, 400);
       for (const item of order.items) {

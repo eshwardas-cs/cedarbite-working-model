@@ -225,7 +225,7 @@ class StatusTests(OrderTestBase):
             svc.change_status(self.db, 9999, S.ACCEPTED, "staff")
         self.assertEqual(ctx.exception.status, 404)
 
-    def test_queue_shows_only_active_paid_orders_and_no_identity(self):
+    def test_queue_shows_only_active_paid_orders_and_no_identity_for_non_cedar_email(self):
         self.place([(self.water, 1)])                      # unpaid: not in queue
         o = self.paid_order()
         queue = svc.queue_view(self.db)
@@ -236,6 +236,15 @@ class StatusTests(OrderTestBase):
         for t in (S.PREPARING, S.READY, S.COLLECTED):
             svc.change_status(self.db, o.id, t, "staff")
         self.assertEqual(svc.queue_view(self.db), [])      # collected orders leave the queue
+
+    def test_queue_includes_valid_cedar_student_id_for_canteen_matching(self):
+        student = create_user(self.db, "2526245@cedar.edu.pk", PW, Role.STUDENT, True)
+        order, _ = self.place([(self.water, 1)], user=student)
+        svc.change_status(self.db, order.id, S.PAYMENT_PENDING, "system")
+        svc.change_status(self.db, order.id, S.SUBMITTED, "system")
+        queue = svc.queue_view(self.db)
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["student_id"], "2526245")
 
 
 class WindowTests(OrderTestBase):

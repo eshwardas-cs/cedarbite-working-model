@@ -309,15 +309,21 @@ def order_dict(o: Order) -> dict:
 
 
 def queue_view(db: Session, now: datetime | None = None) -> list[dict]:
-    """Counter view, including only the student ID needed to match an order."""
+    """Counter view with a Cedar student ID only when the order has a valid one."""
     now = now or utcnow()
     rows = db.scalars(select(Order).where(Order.status.in_(QUEUE_STATUSES))
                       .order_by(Order.created_at, Order.id)).all()
     users = db.scalars(select(User).where(User.id.in_({order.user_id for order in rows}))).all() if rows else []
     student_ids = {user.id: student_id_from_email(user.email) for user in users}
-    return [{"id": o.id, "pickup_code": o.pickup_code, "status": o.status.value, "mode": o.mode.value,
-             "student_id": student_ids.get(o.user_id),
-             "created_at": aware(o.created_at).isoformat(),
-             "waiting_minutes": int((now - aware(o.created_at)).total_seconds() // 60),
-             "pickup_window": window_dict(o.pickup_window),
-             "items": [{"name": i.name_snapshot, "quantity": i.quantity} for i in o.items]} for o in rows]
+    result = []
+    for order in rows:
+        queue_order = {"id": order.id, "pickup_code": order.pickup_code, "status": order.status.value,
+                       "mode": order.mode.value, "created_at": aware(order.created_at).isoformat(),
+                       "waiting_minutes": int((now - aware(order.created_at)).total_seconds() // 60),
+                       "pickup_window": window_dict(order.pickup_window),
+                       "items": [{"name": item.name_snapshot, "quantity": item.quantity} for item in order.items]}
+        student_id = student_ids.get(order.user_id)
+        if student_id:
+            queue_order["student_id"] = student_id
+        result.append(queue_order)
+    return result

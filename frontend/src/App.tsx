@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { availablePickupWindows as filterPickupWindows, formatPickupTime, samplePickupWindows, type PickupWindow } from "./pickupWindows";
 
 type User = { email: string; role: string; email_verified: boolean; student_id: string | null; permissions: string[]; csrf_token: string };
 type Item = { id: number; category_id: number; name: string; description: string; price_paisa: number; price_display: string; available: boolean; quick_allowed: boolean; scheduled_allowed: boolean; prep_minutes: number | null };
@@ -7,7 +8,6 @@ type Order = { id: string | number; status: string; mode: string; total_display?
 type Deal = { id: string; title: string; description: string; active: boolean; item_ids?: number[] };
 type Page = "menu" | "orders" | "owner" | "about" | "privacy" | "contact" | "confirmation";
 type OrderMode = "quick" | "scheduled";
-type PickupWindow = { id: number; start_at: string; end_at: string; remaining: number };
 type WalletEntry = { id: string | number; label: string; amount: number; kind: "credit" | "debit"; created_at: string; method: string };
 
 function pageForPath(path: string): Page {
@@ -48,29 +48,6 @@ const DEMO_ORDERS_KEY = "cedarbite-demo-orders";
 const CANTEEN_SESSION_KEY = "cedarbite-canteen-session";
 const SHARED_DATA_URL = "/.netlify/functions/shared-data";
 const walletKey = (email: string) => `cedarbite-demo-wallet:${email}`;
-function samplePickupWindows(now: Date = new Date()): PickupWindow[] {
-  const openingPreview = new Date(now); openingPreview.setHours(7, 50, 0, 0);
-  const closing = new Date(now); closing.setHours(16, 0, 0, 0);
-  if (now < openingPreview || now >= closing) return [];
-  const slots: PickupWindow[] = [];
-  const firstAllowed = new Date(now.getTime() + 10 * 60 * 1000);
-  firstAllowed.setSeconds(0, 0);
-  const remainder = firstAllowed.getMinutes() % 10;
-  if (remainder) firstAllowed.setMinutes(firstAllowed.getMinutes() + 10 - remainder);
-  const firstDay = new Date(now); firstDay.setHours(0, 0, 0, 0);
-  for (let day = 0; day < 1; day++) {
-    const date = new Date(firstDay); date.setDate(firstDay.getDate() + day);
-    for (let minute = 8 * 60; minute <= 15 * 60; minute += 10) {
-      const start = new Date(date); start.setHours(Math.floor(minute / 60), minute % 60, 0, 0);
-      if (start < firstAllowed) continue;
-      const end = new Date(start.getTime() + 60 * 60 * 1000);
-      if (end > closing) continue;
-      slots.push({ id: -start.getTime(), start_at: start.toISOString(), end_at: end.toISOString(), remaining: 8 });
-    }
-  }
-  return slots;
-}
-
 function CedarMark() {
   return <svg className="cedar-mark" viewBox="0 0 64 64" role="img" aria-label="CedarBite logo mark"><path d="M9 25C15 14 24 9 32 8v13C24 22 18 26 14 33z" fill="#ffc928"/><path d="M55 25C49 14 40 9 32 8v13c8 1 14 5 18 12z" fill="#102b4c"/><path d="M12 36h40v5H12z" fill="#102b4c"/><path d="M19 34a13 13 0 0 1 26 0z" fill="#102b4c"/><path d="M20 44v11h5V44m7 0v11h5V44m7 0v11h5V44" fill="#ffc928"/><circle cx="49" cy="49" r="9" fill="#fff" stroke="#102b4c" strokeWidth="3"/><path d="m45 49 3 3 5-6" fill="none" stroke="#ffc928" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
@@ -99,6 +76,7 @@ export default function App() {
   const orderSubmittingRef = useRef(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [pickupWindows, setPickupWindows] = useState<PickupWindow[]>([]);
+  const pickupWindowsFromApiRef = useRef(false);
   const [scheduleClock, setScheduleClock] = useState(Date.now());
   const [selectedWindow, setSelectedWindow] = useState("");
   const [dealsActive, setDealsActive] = useState(false);
@@ -134,17 +112,10 @@ export default function App() {
   const cashTopUpRequest = useRef<{ signature: string; key: string } | null>(null);
   const [dealMessage, setDealMessage] = useState("");
   const [itemMessage, setItemMessage] = useState("");
-  const availablePickupWindows = useMemo(() => pickupWindows.filter((window) => {
-    const start = new Date(window.start_at);
-    const end = new Date(window.end_at);
-    const now = new Date(scheduleClock);
-    const openingPreview = new Date(now); openingPreview.setHours(7, 50, 0, 0);
-    const closing = new Date(now); closing.setHours(16, 0, 0, 0);
-    const minute = start.getHours() * 60 + start.getMinutes();
-    return window.remaining > 0 && now >= openingPreview && now < closing &&
-      start.toDateString() === now.toDateString() && start.getTime() >= scheduleClock + 10 * 60 * 1000 &&
-      minute >= 8 * 60 && minute <= 15 * 60 && end <= closing && start.getMinutes() % 10 === 0;
-  }), [pickupWindows, scheduleClock]);
+  const availablePickupWindows = useMemo(
+    () => filterPickupWindows(pickupWindows, new Date(scheduleClock)),
+    [pickupWindows, scheduleClock],
+  );
 
   const request = useCallback(async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
     const headers = new Headers(init.headers);
@@ -225,7 +196,14 @@ export default function App() {
   useEffect(() => {
     document.title = page === "owner" ? "CedarBite Canteen Console" : page === "confirmation" ? "Order confirmed · CedarBite" : page === "about" ? "About CedarBite" : page === "privacy" ? "Privacy Policy · CedarBite" : page === "contact" ? "Contact CedarBite" : "CedarBite — order your break";
     void loadMenu();
-    void request<{ windows: PickupWindow[] }>("/api/pickup-windows").then((result) => setPickupWindows(result.windows)).catch(() => setPickupWindows(samplePickupWindows()));
+    void request<{ windows: PickupWindow[] }>("/api/pickup-windows").then((result) => {
+      if (!Array.isArray(result.windows)) throw new Error("Pickup schedule is unavailable.");
+      pickupWindowsFromApiRef.current = true;
+      setPickupWindows(result.windows);
+    }).catch(() => {
+      pickupWindowsFromApiRef.current = false;
+      setPickupWindows(samplePickupWindows());
+    });
     void request<{ configured: boolean }>("/api/auth/google/status").then((result) => setGoogleReady(result.configured)).catch(() => setGoogleReady(false));
     const savedDemoUser = localStorage.getItem(DEMO_USER_KEY);
     if (savedDemoUser) { try { const result = JSON.parse(savedDemoUser) as User; if (result.role === "DEMO_CANTEEN" && !sessionStorage.getItem(CANTEEN_SESSION_KEY)) { localStorage.removeItem(DEMO_USER_KEY); setUser(null); } else { setUser(result); setCsrf(result.csrf_token); } } catch { localStorage.removeItem(DEMO_USER_KEY); setUser(null); } }
@@ -242,8 +220,14 @@ export default function App() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      setScheduleClock(Date.now());
-      void request<{ windows: PickupWindow[] }>("/api/pickup-windows").then((result) => setPickupWindows(result.windows)).catch(() => {});
+      const now = Date.now();
+      setScheduleClock(now);
+      if (!pickupWindowsFromApiRef.current) setPickupWindows(samplePickupWindows(new Date(now)));
+      void request<{ windows: PickupWindow[] }>("/api/pickup-windows").then((result) => {
+        if (!Array.isArray(result.windows)) return;
+        pickupWindowsFromApiRef.current = true;
+        setPickupWindows(result.windows);
+      }).catch(() => {});
     }, 30_000);
     return () => window.clearInterval(timer);
   }, [request]);
@@ -251,10 +235,6 @@ export default function App() {
   useEffect(() => {
     if (selectedWindow && !availablePickupWindows.some((window) => String(window.id) === selectedWindow)) setSelectedWindow("");
   }, [availablePickupWindows, selectedWindow]);
-
-  useEffect(() => {
-    if (user?.role === "DEMO_STUDENT" && pickupWindows.length === 0) setPickupWindows(samplePickupWindows());
-  }, [pickupWindows.length, user?.role]);
 
   useEffect(() => {
     if (user?.role === "DEMO_CANTEEN") { void loadQueue(); void loadSharedAvailability(); return; }
@@ -381,14 +361,21 @@ export default function App() {
     if (user?.role !== "DEMO_STUDENT") { setToast("Sign in with a Cedar email to place an order."); return; }
     if (!cartCount) return;
     if (orderingReason.includes("paused")) { setToast("Ordering is paused in the canteen console."); return; }
-    if (orderMode === "scheduled" && !selectedWindow) { setToast("Choose an available pickup window first."); return; }
+    const selectedPickupWindow = orderMode === "scheduled"
+      ? availablePickupWindows.find((window) => String(window.id) === selectedWindow)
+      : null;
+    if (orderMode === "scheduled" && !selectedPickupWindow) {
+      setSelectedWindow("");
+      setToast("That pickup slot is no longer available. Choose a current slot.");
+      return;
+    }
     if (paymentMethod === "wallet" && walletBalance < cartTotal) { setToast("Your wallet balance is too low. Add practice credit to continue."); setWalletOpen(true); return; }
     orderSubmittingRef.current = true;
     setOrderSubmitting(true);
     const entry = paymentMethod === "wallet" ? { id: crypto.randomUUID(), label: "Order payment (practice)", amount: cartTotal, kind: "debit" as const, created_at: new Date().toISOString(), method: "CedarBite practice wallet" } : null;
     let pickupCode = "";
     do { pickupCode = `CB${crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`; } while (orders.some((existing) => existing.pickup_code === pickupCode));
-    const order: Order = { id: crypto.randomUUID(), status: "SUBMITTED", mode: orderMode === "quick" ? "QUICK" : "SCHEDULED", student_id: user.student_id, total_display: money(cartTotal), pickup_code: pickupCode, created_at: new Date().toISOString(), pickup_window: orderMode === "scheduled" ? (() => { const selected = pickupWindows.find((w) => String(w.id) === selectedWindow); return selected ? { start_at: selected.start_at, end_at: selected.end_at } : null; })() : null, items: Object.entries(cart).flatMap(([id, quantity]) => { const item = items.find((candidate) => candidate.id === Number(id)); return item ? [{ item_id: item.id, name: item.name.replace("[DEV SAMPLE] ", ""), quantity }] : []; }), waiting_minutes: 0 };
+    const order: Order = { id: crypto.randomUUID(), status: "SUBMITTED", mode: orderMode === "quick" ? "QUICK" : "SCHEDULED", student_id: user.student_id, total_display: money(cartTotal), pickup_code: pickupCode, created_at: new Date().toISOString(), pickup_window: selectedPickupWindow ? { start_at: selectedPickupWindow.start_at, end_at: selectedPickupWindow.end_at } : null, items: Object.entries(cart).flatMap(([id, quantity]) => { const item = items.find((candidate) => candidate.id === Number(id)); return item ? [{ item_id: item.id, name: item.name.replace("[DEV SAMPLE] ", ""), quantity }] : []; }), waiting_minutes: 0 };
     try {
       const saved = await request<{ order: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "create-order", order }) });
       if (entry) saveWallet(walletBalance - cartTotal, [entry, ...walletEntries]);
@@ -564,7 +551,7 @@ export default function App() {
   <button className="wordmark" onClick={() => navigate("menu")}><CedarMark /><span>Cedar<span>Bite</span></span></button>
   <button type="button" className="mobile-menu-toggle" aria-controls="store-navigation" aria-expanded={mobileMenuOpen} onClick={() => setMobileMenuOpen((open) => !open)}><span aria-hidden="true">{mobileMenuOpen ? "×" : "☰"}</span>{mobileMenuOpen ? "Close" : "Menu"}</button>
   <div className={`header-menu ${mobileMenuOpen ? "is-open" : ""}`} id="store-navigation">
-    <nav className="store-nav" aria-label="Main navigation"><button className={page === "menu" && !dealsActive ? "selected" : ""} onClick={() => navigate("menu")}>Menu</button><button className={page === "menu" && dealsActive ? "selected" : ""} onClick={() => { if (page !== "menu") navigate("menu"); setDealsActive(true); setMobileMenuOpen(false); setTimeout(() => document.getElementById("deals")?.scrollIntoView({ behavior: "smooth" }), 0); }}>Deals</button><button className={page === "about" ? "selected" : ""} onClick={() => navigate("about")}>About us</button><button className={page === "privacy" ? "selected" : ""} onClick={() => navigate("privacy")}>Privacy</button><button className={page === "contact" ? "selected" : ""} onClick={() => navigate("contact")}>Contact</button>{canSeeOrders && <button className={page === "orders" ? "selected" : ""} onClick={() => navigate("orders")}>My orders</button>}</nav>
+    <nav className="store-nav" aria-label="Main navigation"><button className={page === "menu" && !dealsActive ? "selected" : ""} onClick={() => navigate("menu")}>Menu</button><button className={page === "menu" && dealsActive ? "selected" : ""} onClick={() => { if (page !== "menu") navigate("menu"); setDealsActive(true); setMobileMenuOpen(false); setTimeout(() => document.getElementById("deals")?.scrollIntoView({ behavior: "smooth" }), 0); }}>Deals</button><button className={page === "about" ? "selected" : ""} onClick={() => navigate("about")}>About us</button><button className={page === "contact" ? "selected" : ""} onClick={() => navigate("contact")}>Contact</button>{canSeeOrders && <button className={page === "orders" ? "selected" : ""} onClick={() => navigate("orders")}>My orders</button>}</nav>
     <div className="header-actions"><button className="wallet-header" onClick={() => { setMobileMenuOpen(false); user?.role === "DEMO_STUDENT" ? setWalletOpen(true) : loginDialog.current?.showModal(); }}><span>Wallet</span><b>{user?.role === "DEMO_STUDENT" ? money(walletBalance) : "Sign in"}</b></button><button className="basket-header" aria-label={`Open bucket, ${cartCount} items`} onClick={() => { setMobileMenuOpen(false); setCartOpen(true); }}><span className="basket-symbol">▣</span><span>Bucket</span><b>{cartCount}</b></button>{canManage && <button className="owner-entry" onClick={() => navigate("owner")}>Canteen console <span>↗</span></button>}{user ? <button className="sign-button" onClick={() => { setMobileMenuOpen(false); void signOut(); }}>{user.student_id ? `ID ${user.student_id}` : human(user.role)} · Sign out</button> : <button className="sign-button" onClick={() => { setMobileMenuOpen(false); loginDialog.current?.showModal(); }}>Login <span>↗</span></button>}<button type="button" className="theme-toggle" onClick={() => setDarkMode((dark) => !dark)} aria-label={`Switch to ${darkMode ? "light" : "dark"} mode`} title={darkMode ? "Switch to light mode" : "Switch to dark mode"}><span aria-hidden="true">{darkMode ? "☀" : "☾"}</span></button></div>
   </div>
 </header>
@@ -577,7 +564,7 @@ export default function App() {
       <section className="how-it-works"><div><span className="section-kicker">TWO WAYS TO ORDER</span><h2>Made for <span>your day.</span></h2><p className="section-subcopy">Different food, different pickup. The canteen chooses which items and times it can support.</p></div><div className="ordering-modes"><article><span className="mode-icon">↗</span><div><small>01 · READY TO SELL</small><h3>Quick Order</h3><p>Choose a ready-made item, add it to your bucket, and move it through the canteen queue. No pickup slot is needed.</p></div></article><article><span className="mode-icon blue">◷</span><div><small>02 · MADE FRESH</small><h3>Scheduled Order</h3><p>For food that needs preparation, choose from pickup windows supported by the canteen.</p></div></article></div></section>      <section className="payment-note"><div><span className="section-kicker">CEDARBITE WALLET</span><h2>Top up. <span>Order. Enjoy.</span></h2><p>Top up your CedarBite wallet and choose a payment method at checkout. Practice credits are stored only in this browser; no money is transferred.</p><button className="blue-button" onClick={() => user?.role === "DEMO_STUDENT" ? setWalletOpen(true) : loginDialog.current?.showModal()}>Open wallet <span>→</span></button></div><div className="payment-pills"><span>EasyPaisa</span><span>JazzCash</span><span>Bank transfer</span><span>Card</span><span>Cash at pickup</span></div></section>
     </main>}
     <footer className="store-footer"><div className="footer-main"><div><button className="wordmark footer-mark" onClick={() => navigate("menu")}><CedarMark/><span>Cedar<span>Bite</span></span></button><p>Queue · Order · Enjoy<br/>A Cedar College portfolio project in discovery.</p></div><div><b>Explore</b><button onClick={() => navigate("menu")}>Menu</button><button onClick={() => { navigate("menu"); setDealsActive(true); setTimeout(() => document.getElementById("deals")?.scrollIntoView({ behavior:"smooth" }),0); }}>Deals</button><button onClick={() => navigate("about")}>About us</button><button onClick={() => navigate("owner")}>Canteen dashboard</button></div><div><b>Help & information</b><button onClick={() => navigate("contact")}>Contact us</button><button onClick={() => navigate("privacy")}>Privacy policy</button></div><div className="footer-status"><b>Launch information</b><span>Student-built project</span><span>Shared pickup orders · no payment processing</span></div></div><div className="footer-bottom"><span>© {new Date().getFullYear()} CedarBite. All rights reserved.</span><span>Made for the Cedar College community</span></div></footer>
-    {cartOpen && <div className="cart-scrim" onClick={() => setCartOpen(false)}><aside className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Your bucket"><div className="cart-head"><div><span className="section-kicker">YOUR ORDER</span><h2>Your bucket <small>({cartCount})</small></h2></div><button onClick={() => setCartOpen(false)} aria-label="Close bucket">×</button></div><div className="cart-service"><b>Pickup</b><span>{orderMode === "quick" ? "Quick Order · no slot required" : "Scheduled Order · choose a slot"}</span></div>{orderMode === "scheduled" && <label className="bucket-window">Choose your pickup slot<select value={selectedWindow} onChange={(event) => setSelectedWindow(event.target.value)}><option value="">{availablePickupWindows.length ? "Choose from the next available pickup slots" : "No pickup slots are available right now"}</option>{availablePickupWindows.slice(0, 6).map((window) => <option key={window.id} value={window.id}>{new Date(window.start_at).toLocaleString([], { weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit" })} – {new Date(window.end_at).toLocaleTimeString([], { hour:"numeric", minute:"2-digit" })}</option>)}</select></label>}<div className="cart-lines">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => { const item = items.find((entry) => entry.id === Number(id)); if (!item) return null; return <div className="cart-line" key={id}><div><b>{item.name.replace("[DEV SAMPLE] ", "")}</b><small>{item.price_display} each</small></div><div className="quantity-controls"><button onClick={() => addToCart(item.id, -1)} aria-label={`Remove one ${item.name}`}>−</button><b>{quantity}</b><button onClick={() => addToCart(item.id, 1)} aria-label={`Add one ${item.name}`}>+</button></div><strong>{money(item.price_paisa * quantity)}</strong></div>; })}{!cartCount && <div className="cart-empty"><span>▣</span><h3>Your bucket is empty</h3><p>Add a menu item to start building your order.</p><button className="blue-button" onClick={() => { setCartOpen(false); document.getElementById("menu")?.scrollIntoView({behavior:"smooth"}); }}>Browse menu</button></div>}</div><div className="cart-bottom"><div className="cart-total"><span>Subtotal</span><b>{money(cartTotal)}</b></div><label className="demo-payment">Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="wallet">CedarBite wallet · {money(walletBalance)}</option><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="cash">Cash at pickup</option></select></label><p>Launch information: selections and practice wallet credits stay in this browser. No payment details are requested and no money moves.</p><button className="checkout-button" disabled={!cartCount || orderSubmitting || user?.role !== "DEMO_STUDENT" || (orderMode === "scheduled" && !selectedWindow)} onClick={placeDemoOrder}>{orderSubmitting ? "Sending order…" : user?.role === "DEMO_STUDENT" ? "Place demo order" : "Sign in to place an order"}</button>{user?.role !== "DEMO_STUDENT" && <button className="cart-signin" onClick={() => loginDialog.current?.showModal()}>Sign in with your Cedar email</button>}</div></aside></div>}
+    {cartOpen && <div className="cart-scrim" onClick={() => setCartOpen(false)}><aside className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Your bucket"><div className="cart-head"><div><span className="section-kicker">YOUR ORDER</span><h2>Your bucket <small>({cartCount})</small></h2></div><button onClick={() => setCartOpen(false)} aria-label="Close bucket">×</button></div><div className="cart-service"><b>Pickup</b><span>{orderMode === "quick" ? "Quick Order · no slot required" : "Scheduled Order · choose a slot"}</span></div>{orderMode === "scheduled" && <label className="bucket-window">Choose your pickup slot<select value={selectedWindow} onChange={(event) => setSelectedWindow(event.target.value)}><option value="">{availablePickupWindows.length ? "Choose from the next available pickup slots" : "No pickup slots are available right now"}</option>{availablePickupWindows.slice(0, 6).map((window) => <option key={window.id} value={window.id}>{new Date(window.start_at).toLocaleString("en-PK", { timeZone:"Asia/Karachi", weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit" })} – {formatPickupTime(window.end_at)}</option>)}</select></label>}<div className="cart-lines">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => { const item = items.find((entry) => entry.id === Number(id)); if (!item) return null; return <div className="cart-line" key={id}><div><b>{item.name.replace("[DEV SAMPLE] ", "")}</b><small>{item.price_display} each</small></div><div className="quantity-controls"><button onClick={() => addToCart(item.id, -1)} aria-label={`Remove one ${item.name}`}>−</button><b>{quantity}</b><button onClick={() => addToCart(item.id, 1)} aria-label={`Add one ${item.name}`}>+</button></div><strong>{money(item.price_paisa * quantity)}</strong></div>; })}{!cartCount && <div className="cart-empty"><span>▣</span><h3>Your bucket is empty</h3><p>Add a menu item to start building your order.</p><button className="blue-button" onClick={() => { setCartOpen(false); document.getElementById("menu")?.scrollIntoView({behavior:"smooth"}); }}>Browse menu</button></div>}</div><div className="cart-bottom"><div className="cart-total"><span>Subtotal</span><b>{money(cartTotal)}</b></div><label className="demo-payment">Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="wallet">CedarBite wallet · {money(walletBalance)}</option><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="cash">Cash at pickup</option></select></label><p>Launch information: selections and practice wallet credits stay in this browser. No payment details are requested and no money moves.</p><button className="checkout-button" disabled={!cartCount || orderSubmitting || user?.role !== "DEMO_STUDENT" || (orderMode === "scheduled" && !selectedWindow)} onClick={placeDemoOrder}>{orderSubmitting ? "Sending order…" : user?.role === "DEMO_STUDENT" ? "Place demo order" : "Sign in to place an order"}</button>{user?.role !== "DEMO_STUDENT" && <button className="cart-signin" onClick={() => loginDialog.current?.showModal()}>Sign in with your Cedar email</button>}</div></aside></div>}
     <dialog className="signin-dialog" ref={loginDialog}><button className="dialog-x" onClick={() => loginDialog.current?.close()} aria-label="Close sign in">×</button><CedarMark/><span className="section-kicker">WELCOME TO CEDARBITE</span><h2>Sign in with your<br/><span>cedar email</span></h2><p>Use a Cedar College email to create a presentation profile saved in this browser. No password or Google credentials are requested.</p>{googleReady ? <button className="google-button" onClick={startSignIn}><GoogleIcon/> Sign in with Google account</button> : <form className="demo-signin-form" onSubmit={(event) => { event.preventDefault(); demoSignIn(demoEmail); }}><label>Cedar email<input type="email" required value={demoEmail} onChange={(event) => setDemoEmail(event.target.value)} placeholder="your.email@cedar.edu.pk"/></label><button className="google-button">Continue with Cedar email</button><small>Presentation sign-in · use a Cedar email</small></form>}<small className="secure-hint">Profile and practice wallet are saved in this browser only.</small></dialog>
     {walletOpen && <div className="wallet-scrim" onClick={() => setWalletOpen(false)}><section className="wallet-panel" role="dialog" aria-modal="true" aria-labelledby="wallet-title" onClick={(event) => event.stopPropagation()}><div className="cart-head"><div><span className="section-kicker">CEDARBITE WALLET</span><h2 id="wallet-title">Your wallet</h2></div><button onClick={() => setWalletOpen(false)} aria-label="Close wallet">×</button></div><div className="wallet-balance"><span>Available balance</span><b>{money(walletBalance)}</b><small>{user?.role === "DEMO_STUDENT" ? "Practice balance kept in this browser" : user?.role === "student" || user?.role === "staff_customer" ? "Shared account balance" : "Sign in with your Cedar account to view your wallet"}</small></div>{user?.role === "DEMO_STUDENT" ? <><label className="demo-payment">Top-up amount (PKR)<input type="number" min="100" max="5000" step="50" value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)}/></label><label className="demo-payment">Top up using<select value={topUpMethod} onChange={(event) => setTopUpMethod(event.target.value)}><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option></select></label><p className="wallet-note">Practice credit only. No payment provider is contacted and no money is transferred.</p><button className="blue-button wallet-topup" onClick={demoTopUp}>Add practice credit</button></> : <p className="wallet-note">To add cash to this wallet, give the money to canteen staff and ask them to record it against your student ID.</p>}<h3>Recent wallet activity</h3>{walletEntries.length ? <div className="wallet-history">{walletEntries.slice(0,5).map((entry) => <div key={entry.id}><span><b>{entry.label}</b><small>{new Date(entry.created_at).toLocaleString()} · {entry.method}</small></span><strong className={entry.kind}>{entry.kind === "credit" ? "+" : "−"}{money(entry.amount)}</strong></div>)}</div> : <p className="wallet-empty">No wallet activity yet.</p>}</section></div>}
     {toast && <div className="toast-message" role="status">{toast}<button onClick={() => setToast("")}>×</button></div>}
