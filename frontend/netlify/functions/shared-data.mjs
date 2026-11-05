@@ -17,6 +17,21 @@ function safeEqual(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+async function retryRead(operation) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try { return await operation(); }
+    catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+const readJSON = (key) => retryRead(() => store.get(key, { type: "json", consistency: "strong" }));
+const listBlobs = (prefix) => retryRead(() => store.list({ prefix }));
+
 const staffSettings = {
   order_manager: { username: () => process.env.CANTEEN_DASHBOARD_USERNAME || "manager", password: () => process.env.CANTEEN_DASHBOARD_PASSWORD },
   order_taker: { username: () => process.env.CANTEEN_COUNTER_USERNAME || "counter", password: () => process.env.CANTEEN_COUNTER_PASSWORD },
@@ -25,7 +40,11 @@ const staffSettings = {
 };
 
 async function stationPassword(station) {
-  return await store.get(`staff-passwords/${station}`, { type: "json", consistency: "strong" });
+  try { return await readJSON(`staff-passwords/${station}`); }
+  catch (error) {
+    console.error("CedarBite station password override could not be read; using the configured environment password if available.", { station, error });
+    return null;
+  }
 }
 
 async function staffConfigured(station) {
@@ -65,23 +84,26 @@ const isManager = async (request) => isStaff(request, "order_manager");
 const stationLabel = { order_manager: "order control", order_taker: "counter orders", cashier: "cash desk", kitchen: "kitchen monitor" };
 
 async function readByPrefix(prefix) {
-  const { blobs } = await store.list({ prefix });
-  const records = await Promise.all(blobs.map(({ key }) => store.get(key, { type: "json", consistency: "strong" })));
+  const { blobs } = await listBlobs(prefix);
+  const records = await Promise.all(blobs.map(({ key }) => readJSON(key).catch((error) => {
+    console.error("CedarBite skipped an unreadable shared record.", { key, error });
+    return null;
+  })));
   return records.filter(Boolean);
 }
 
 async function readAvailabilityOverrides() {
-  const { blobs } = await store.list({ prefix: "availability/" });
+  const { blobs } = await listBlobs("availability/");
   const pairs = await Promise.all(blobs.map(async ({ key }) => [
     key.slice("availability/".length),
-    await store.get(key, { type: "json", consistency: "strong" }),
+    await readJSON(key),
   ]));
   return Object.fromEntries(pairs.filter(([, value]) => typeof value === "boolean"));
 }
 
 async function migrateLegacyQueue() {
   const marker = "meta/active-queue-v1";
-  if (await store.get(marker, { type: "json", consistency: "strong" })) return;
+  if (await readJSON(marker)) return;
   const legacyOrders = await readByPrefix("orders/");
   await Promise.all(legacyOrders
     .filter((order) => order.status !== "COLLECTED")
@@ -97,7 +119,7 @@ export default async (request) => {
         return reply({ availability: await readAvailabilityOverrides() });
       }
       if (url.searchParams.get("scope") === "menu") {
-        const menu = await store.get("menu/catalog", { type: "json", consistency: "strong" });
+        const menu = await readJSON("menu/catalog");
         if (!Array.isArray(menu?.categories)) return reply({ categories: null });
         const availability = await readAvailabilityOverrides();
         const categories = menu.categories.map((category) => ({ ...category, items: category.items.map((item) => ({ ...item, available: availability[String(item.id)] ?? item.available })) }));
@@ -224,9 +246,9 @@ export default async (request) => {
       const reference = String(body.idempotency_key ?? "");
       if (!/^[a-f0-9-]{20,80}$/i.test(reference)) return reply({ error: "A valid transaction reference is required." }, 400);
       const referenceKey = `wallet-topups/${reference}`;
-      const duplicate = await store.get(referenceKey, { type: "json", consistency: "strong" });
+      const duplicate = await readJSON(referenceKey);
       const walletKey = `wallets/${student_id}`;
-      const wallet = await store.get(walletKey, { type: "json", consistency: "strong" }) || { balance_paisa: 0, entries: [] };
+      const wallet = await readJSON(walletKey) || { balance_paisa: 0, entries: [] };
       if (duplicate) return reply({ student_id, balance_paisa: wallet.balance_paisa, entry: duplicate, duplicate: true });
       const entry = { id: reference, student_id, kind: "credit", amount_paisa, method: "cash_at_counter", label: String(body.note ?? "Cash wallet top-up").slice(0, 160), created_at: new Date().toISOString(), recorded_by: request.headers.get("x-canteen-username") || "cashier" };
       const updated = { balance_paisa: wallet.balance_paisa + amount_paisa, entries: [entry, ...(Array.isArray(wallet.entries) ? wallet.entries : [])].slice(0, 200) };
@@ -240,7 +262,7 @@ export default async (request) => {
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
       const orderId = String(body.order_id ?? "");
       const key = `queue/${orderId}`;
-      const order = await store.get(key, { type: "json", consistency: "strong" });
+      const order = await readJSON(key);
       if (!order) return reply({ error: "Order not found." }, 404);
       if (order.payment_method !== "cash") return reply({ error: "This order is not marked for cash payment." }, 409);
       if (order.payment_status === "PAID") return reply({ order, duplicate: true });
@@ -276,9 +298,9 @@ export default async (request) => {
     if (body.action === "set-status") {
       if (typeof body.order_id !== "string" || typeof body.status !== "string") return reply({ error: "Order status details are invalid." }, 400);
       const key = `queue/${body.order_id}`;
-      const order = await store.get(key, { type: "json", consistency: "strong" });
+      const order = await readJSON(key);
       if (!order) {
-        const completed = await store.get(`history/${body.order_id}`, { type: "json", consistency: "strong" });
+        const completed = await readJSON(`history/${body.order_id}`);
         if (completed && body.status === "COLLECTED") return reply({ order: completed, duplicate: true });
         return reply({ error: "Order not found." }, 404);
       }
