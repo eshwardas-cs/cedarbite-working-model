@@ -77,16 +77,22 @@ export default async (request) => {
         const orders = await readByPrefix("queue/");
         return reply({ windows: listPickupWindows(orders) });
       }
-      if (["queue", "cash-desk", "kitchen"].includes(url.searchParams.get("scope"))) {
+      if (["queue", "cash-desk", "kitchen", "history", "wallet-history"].includes(url.searchParams.get("scope"))) {
         const scope = url.searchParams.get("scope");
         const station = scope === "cash-desk" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
         if (!staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
         if (!isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
         await migrateLegacyQueue();
-        let orders = await readByPrefix("queue/");
+        if (scope === "wallet-history") {
+          const entries = await readByPrefix("wallet-topups/");
+          entries.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+          return reply({ entries: entries.slice(0, 200) });
+        }
+        let orders = await readByPrefix(scope === "history" ? "history/" : "queue/");
         if (scope === "cash-desk") orders = orders.filter((order) => order.payment_method === "cash" && order.payment_status !== "PAID" && order.status !== "COLLECTED");
         if (scope === "kitchen") orders = orders.filter((order) => order.status === "PREPARING").map(({ student_id, payment_method, payment_status, ...order }) => order);
-        orders.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+        if (scope === "history") orders.sort((a, b) => Date.parse(b.completed_at ?? b.created_at) - Date.parse(a.completed_at ?? a.created_at));
+        else orders.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
         return reply({ orders: orders.slice(0, 100) });
       }
       return reply({ error: "Unknown request." }, 404);
@@ -223,11 +229,20 @@ export default async (request) => {
       if (typeof body.order_id !== "string" || typeof body.status !== "string") return reply({ error: "Order status details are invalid." }, 400);
       const key = `queue/${body.order_id}`;
       const order = await store.get(key, { type: "json", consistency: "strong" });
-      if (!order) return reply({ error: "Order not found." }, 404);
+      if (!order) {
+        const completed = await store.get(`history/${body.order_id}`, { type: "json", consistency: "strong" });
+        if (completed && body.status === "COLLECTED") return reply({ order: completed, duplicate: true });
+        return reply({ error: "Order not found." }, 404);
+      }
       if (order.status === body.status) return reply({ order, duplicate: true });
       if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
       const updated = { ...order, status: body.status };
-      if (body.status === "COLLECTED") await store.delete(key);
+      if (body.status === "COLLECTED") {
+        const completed = { ...updated, completed_at: new Date().toISOString() };
+        await store.setJSON(`history/${order.id}`, completed);
+        await store.delete(key);
+        return reply({ order: completed });
+      }
       else await store.setJSON(key, updated);
       return reply({ order: updated });
     }
