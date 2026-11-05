@@ -325,10 +325,15 @@ export default async (request) => {
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
-      if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
+      const customerType = order.customer_type ?? "STUDENT";
+      const studentId = order.student_id == null ? null : String(order.student_id);
+      const customerName = typeof order.customer_name === "string" ? order.customer_name.trim() : "";
+      if (customerType !== "STUDENT" && customerType !== "TEACHER") return reply({ error: "Choose whether the order is for a student or teacher." }, 400);
+      if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId ?? "")) return reply({ error: "Student ID must contain seven digits." }, 400);
+      if (customerType === "TEACHER" && (!customerName || customerName.length > 100)) return reply({ error: "Enter the teacher’s name (up to 100 characters)." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
-      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_display: typeof order.total_display === "string" ? order.total_display.slice(0, 40) : "", pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: order.items.map(({ item_id, ...item }) => ({ ...item, item_id })), waiting_minutes: 0, student_id: order.student_id == null ? null : String(order.student_id), payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
+      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_display: typeof order.total_display === "string" ? order.total_display.slice(0, 40) : "", pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: order.items.map(({ item_id, ...item }) => ({ ...item, item_id })), waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
       await store.setJSON(`queue/${saved.id}`, saved);
       return reply({ order: saved }, 201);
     }

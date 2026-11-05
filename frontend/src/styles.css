@@ -278,3 +278,20 @@ button,a,[role="button"],select{touch-action:manipulation}button:not(:disabled),
 .order-hours-message{margin:0;color:#9a4b37;font-size:11px;line-height:1.5}
 :root[data-theme="dark"] .quick-hours-note{color:#b6c5d5}
 :root[data-theme="dark"] .order-hours-message{color:#ffbbaa}
+
+/* Keep every staff station readable when the shared theme is dark. */
+:root[data-theme="dark"] .stations-page{color:#e7edf5}
+:root[data-theme="dark"] .stations-page>h1,:root[data-theme="dark"] .stations-page h2{color:#f1f5fa}
+:root[data-theme="dark"] .stations-page>p,:root[data-theme="dark"] .station-card p,:root[data-theme="dark"] .password-help{color:#b8c6d6}
+:root[data-theme="dark"] .station-card,:root[data-theme="dark"] .station-login,:root[data-theme="dark"] .counter-order-form{background:#142337;color:#e7edf5;border-color:#2f4258}
+:root[data-theme="dark"] .counter-order-form{box-shadow:0 14px 45px #0005}
+:root[data-theme="dark"] .counter-item-list label{background:#101d2d;border-color:#304258;color:#e7edf5}
+:root[data-theme="dark"] .counter-item-list small{color:#b8c6d6}
+:root[data-theme="dark"] .counter-mode button{background:#101d2d;color:#dce6f0;border-color:#42566d}
+:root[data-theme="dark"] .counter-mode button.selected{background:#ffc928;color:#102b4c;border-color:#ffc928}
+:root[data-theme="dark"] .counter-order-success{background:#153b31;color:#d9f6e7}
+:root[data-theme="dark"] .counter-order-success small{color:#b9e7d0}
+:root[data-theme="dark"] .kitchen-screen .station-login{background:#142337;color:#e7edf5;border-color:#3b4f66}
+:root[data-theme="dark"] .kitchen-screen .staff-password-panel{background:#142337;color:#e7edf5;border-color:#3b4f66}
+:root[data-theme="dark"] .kitchen-screen .staff-password-panel input{color:#f1f5fa}
+:root[data-theme="dark"] .kitchen-screen .password-help{color:#c4d1df}
