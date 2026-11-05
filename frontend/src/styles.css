@@ -359,6 +359,39 @@ img.counter-item-visual{display:block}
 @media(max-width:520px){.counter-item-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.counter-item-picture{height:112px}.counter-item-card-info{padding:9px}.counter-item-card-info>div:first-child b{font-size:11px}.counter-item-card-info>small{min-height:42px;font-size:9px}.counter-quantity-control{gap:5px}.counter-quantity-control button{width:30px;height:32px}.counter-quantity-control input{width:43px}.counter-items-heading h2{font-size:18px}}
 @media(max-width:360px){.counter-item-list{grid-template-columns:1fr}}
 
+.receipt-print-root{display:none}
+.receipt-print-button{width:35px;height:35px;flex:none;display:grid;place-items:center;border:1px solid #dce4eb;border-radius:7px;background:#f6f8fb;color:#173c64;font-size:17px}
+.receipt-print-button:hover{border-color:#d1ad24;background:#fff5cf;color:#102b4c}
+:root[data-theme="dark"] .receipt-print-button{border-color:#40546b;background:#1b2e43;color:#f1f5fa}
+:root[data-theme="dark"] .receipt-print-button:hover{border-color:#c5a834;background:#3a321b;color:#ffe08a}
+@media print{
+  @page{size:auto;margin:5mm}
+  html,body{min-width:0!important;margin:0!important;padding:0!important;background:#fff!important;color:#111!important}
+  body *{visibility:hidden!important}
+  .receipt-print-root,.receipt-print-root *{visibility:visible!important}
+  .receipt-print-root{display:block!important;position:fixed!important;inset:0!important;z-index:2147483647!important;width:100%!important;background:#fff!important;color:#111!important}
+  .receipt-print{width:72mm;max-width:100%;margin:0 auto;padding:3mm 2mm;font:10pt/1.35 Arial,Helvetica,sans-serif;color:#111;background:#fff;break-inside:avoid}
+  .receipt-print header{display:grid;justify-items:center;gap:2px;margin-bottom:7px}
+  .receipt-print header b{font-size:20pt;letter-spacing:-.8px}
+  .receipt-print header span{font-size:7pt;font-weight:700;letter-spacing:1.3px}
+  .receipt-divider{border-top:1px dashed #555;margin:7px 0}
+  .receipt-print h1{margin:5px 0;text-align:center;font-size:10pt;letter-spacing:1.4px}
+  .receipt-pickup{display:grid;justify-items:center;gap:2px;padding:7px 0}
+  .receipt-pickup small{font-size:7pt;letter-spacing:1px}
+  .receipt-pickup strong{font-size:24pt;letter-spacing:2px}
+  .receipt-meta{display:grid;grid-template-columns:1fr;gap:2px}
+  .receipt-meta span{margin-top:4px;color:#444;font-size:8pt}
+  .receipt-meta b{font-size:9pt;font-weight:600;overflow-wrap:anywhere}
+  .receipt-lines{display:grid;gap:5px}
+  .receipt-lines>div,.receipt-total{display:flex;justify-content:space-between;gap:10px}
+  .receipt-lines>div span{overflow-wrap:anywhere}
+  .receipt-lines>div b{flex:none;font-weight:600}
+  .receipt-total{align-items:center;font-weight:800}
+  .receipt-total strong{font-size:13pt}
+  .receipt-print footer{margin-top:12px;text-align:center;font-size:8pt;line-height:1.5}
+}
+@media(max-width:680px){.history-item .receipt-print-button{grid-column:2;justify-self:start}}
+
 /* Keep every staff station readable when the shared theme is dark. */
 :root[data-theme="dark"] .stations-page{color:#e7edf5}
 :root[data-theme="dark"] .stations-page>h1,:root[data-theme="dark"] .stations-page h2{color:#f1f5fa}
