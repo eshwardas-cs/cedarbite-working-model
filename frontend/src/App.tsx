@@ -586,21 +586,14 @@ function GoogleIcon() { return <svg viewBox="0 0 48 48" aria-hidden="true"><path
 
 function TeamPage() {
   const members = [
-    { name: "Muhammad Eyad Imran", initials: "ME", accent: "ocean" },
-    { name: "Mudassir", initials: "M", accent: "citrus" },
-    { name: "Rayan", initials: "R", accent: "sky" },
+    { name: "Eshwar Das", initials: "ED", role: "Lead Developer", description: "Leading the development of CedarBite’s campus ordering experience with the student team." },
+    { name: "Muhammad Eyad Imran", initials: "ME", role: "Team Member", description: "Collaborating on CedarBite’s campus canteen ordering project." },
+    { name: "Mudassir", initials: "M", role: "Team Member", description: "Collaborating on CedarBite’s campus canteen ordering project." },
+    { name: "Rayan", initials: "R", role: "Team Member", description: "Collaborating on CedarBite’s campus canteen ordering project." },
   ];
   return <main className="team-page">
-    <section className="team-lead-section">
-      <div className="team-lead-visual">
-        <div className="team-orbit-track" aria-hidden="true"><span className="team-orbit-logo"><CedarMark/></span></div>
-        <div className="team-orbit-halo" aria-hidden="true"/>
-        <div className="team-lead-portrait" role="img" aria-label="Eshwar Das initials portrait"><span>ED</span><i aria-hidden="true"/></div>
-        <span className="team-portrait-caption">01 <i/> PROJECT LEAD</span>
-      </div>
-      <div className="team-lead-copy"><span className="section-kicker">THE PEOPLE BEHIND CEDARBITE</span><h1>Meet <span>Eshwar Das.</span></h1><div className="team-lead-role"><i aria-hidden="true"/> Lead Developer</div><p>Leading the development of CedarBite’s campus ordering experience with the student team.</p><div className="team-lead-divider"><span>CEDARBITE</span><span>QUEUE · ORDER · ENJOY</span></div></div>
-    </section>
-    <section className="team-roster" aria-labelledby="team-roster-title"><div className="team-section-heading"><div><span className="section-kicker">THE TEAM</span><h2 id="team-roster-title">Built together at Cedar.</h2></div><span className="team-count">03 <small>TEAM MEMBERS</small></span></div><div className="team-grid">{members.map((member, index) => <article className={`team-card team-${member.accent}`} key={member.name} style={{ "--team-index": index } as React.CSSProperties}><div className="team-portrait" role="img" aria-label={`${member.initials} initials portrait for ${member.name}`}><span>{member.initials}</span><i aria-hidden="true"/></div><div className="team-card-copy"><span className="team-role">TEAM MEMBER</span><h3>{member.name}</h3><p>Collaborating on CedarBite’s campus canteen ordering project.</p></div><span className="team-card-number">0{index + 2}</span></article>)}</div></section>
+    <section className="team-hero"><span className="section-kicker">THE PEOPLE BEHIND THE PROJECT</span><h1>Four students.<br/><span>One shared idea.</span></h1><p>CedarBite is being shaped by a student team exploring a smoother way to order and collect food on campus.</p><div className="team-hero-orbit" aria-hidden="true"><span><CedarMark/></span><i/><b/></div></section>
+    <section className="team-roster" aria-labelledby="team-roster-title"><div className="team-section-heading"><div><span className="section-kicker">MEET THE TEAM</span><h2 id="team-roster-title">Built together at Cedar.</h2></div><span className="team-count">04 <small>COLLABORATORS</small></span></div><div className="team-member-list">{members.map((member, index) => <article className={`team-member-row ${index === 0 ? "team-member-lead" : ""}`} key={member.name} style={{ "--team-index": index } as React.CSSProperties}><div className="team-member-visual"><div className="team-member-orbit" aria-hidden="true"><i/></div><div className="team-member-avatar" role="img" aria-label={`${member.initials} initials portrait for ${member.name}`}><span>{member.initials}</span></div></div><div className="team-member-copy"><span className="team-role">{index === 0 ? "PROJECT LEAD" : "CEDARBITE TEAM"}</span><h3>{member.name}</h3><strong>{member.role}</strong><p>{member.description}</p></div><span className="team-member-index">0{index + 1}</span></article>)}</div></section>
     <section className="team-note"><span aria-hidden="true">✳</span><p>A student project shaped through collaboration and the needs of the Cedar community.</p><button className="blue-button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>Back to top ↑</button></section>
   </main>;
 }
