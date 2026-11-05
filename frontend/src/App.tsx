@@ -164,6 +164,11 @@ export default function App() {
   const [cashTopUpPending, setCashTopUpPending] = useState(false);
   const [cart, setCart] = useState<Record<number, number>>({});
   const [toast, setToast] = useState("");
+  useEffect(() => {
+    if (!toast) return;
+    const timeout = window.setTimeout(() => setToast(""), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
   const [menuError, setMenuError] = useState("");
   const [googleReady, setGoogleReady] = useState(false);
   const [page, setPage] = useState<Page>(() => pageForPath(window.location.pathname));
