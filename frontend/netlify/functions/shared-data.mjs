@@ -11,11 +11,6 @@ const store = getStore({
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
 const transitions = { SUBMITTED: "PREPARING", ACCEPTED: "READY", PREPARING: "READY", READY: "COLLECTED" };
-function quickOrdersOpen(now = new Date()) {
-  const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Karachi", hour: "2-digit", hourCycle: "h23" }).format(now));
-  return Number.isFinite(hour) && hour >= 8 && hour < 18;
-}
-const QUICK_ORDER_HOURS_MESSAGE = "Quick Orders are available only from 8:00 AM to 6:00 PM Pakistan time.";
 const reportDayKey = (value) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
 const reportHour = (value) => Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Karachi", hour: "2-digit", hourCycle: "h23" }).format(value));
 const orderDay = (value) => Number.isFinite(Date.parse(value)) ? reportDayKey(new Date(value)) : "";
@@ -291,7 +286,6 @@ export default async (request) => {
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
-      if (order.mode === "QUICK" && !quickOrdersOpen()) return reply({ error: QUICK_ORDER_HOURS_MESSAGE }, 409);
       if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) return reply({ error: "Order items are invalid." }, 400);
       const availability = await readAvailabilityOverrides();
@@ -331,7 +325,6 @@ export default async (request) => {
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
-      if (order.mode === "QUICK" && !quickOrdersOpen()) return reply({ error: QUICK_ORDER_HOURS_MESSAGE }, 409);
       if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
