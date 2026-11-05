@@ -16,11 +16,11 @@ class NotFound(MenuError):
 
 
 EDITABLE = {"category_id", "name", "description", "price_paisa", "quick_allowed",
-            "scheduled_allowed", "prep_minutes"}
+            "scheduled_allowed", "prep_minutes", "image_data"}
 
 
 def item_dict(i: MenuItem) -> dict:
-    return {"id": i.id, "category_id": i.category_id, "name": i.name, "description": i.description,
+    return {"id": i.id, "category_id": i.category_id, "name": i.name, "description": i.description, "image_data": i.image_data,
             "price_paisa": i.price_paisa, "price_display": format_pkr(i.price_paisa),
             "available": bool(i.is_active and i.is_available), "is_active": i.is_active,
             "quick_allowed": i.quick_allowed, "scheduled_allowed": i.scheduled_allowed,
@@ -59,7 +59,7 @@ def _check_modes(quick: bool, scheduled: bool) -> None:
 
 def create_item(db: Session, actor: User, *, category_id: int, name: str, description: str = "",
                 price_paisa: int, quick_allowed: bool = False, scheduled_allowed: bool = True,
-                prep_minutes: int | None = None) -> MenuItem:
+                prep_minutes: int | None = None, image_data: str | None = None) -> MenuItem:
     if db.get(MenuCategory, category_id) is None:
         raise MenuError("Category not found.")
     name = name.strip()
@@ -69,7 +69,7 @@ def create_item(db: Session, actor: User, *, category_id: int, name: str, descri
         raise MenuError("Price cannot be negative.")
     _check_modes(quick_allowed, scheduled_allowed)
     item = MenuItem(category_id=category_id, name=name, description=description.strip(),
-                    price_paisa=price_paisa, quick_allowed=quick_allowed,
+                    image_data=image_data, price_paisa=price_paisa, quick_allowed=quick_allowed,
                     scheduled_allowed=scheduled_allowed, prep_minutes=prep_minutes)
     db.add(item)
     db.flush()
@@ -91,7 +91,7 @@ def update_item(db: Session, actor: User, item_id: int, changes: dict) -> MenuIt
     if unknown:
         raise MenuError(f"Cannot change: {', '.join(sorted(unknown))}.")
     for key, value in changes.items():
-        if value is None and key != "prep_minutes":
+        if value is None and key not in {"prep_minutes", "image_data"}:
             raise MenuError(f"{key} cannot be empty.")
     if "category_id" in changes and db.get(MenuCategory, changes["category_id"]) is None:
         raise MenuError("Category not found.")

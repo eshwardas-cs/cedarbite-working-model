@@ -23,6 +23,7 @@ class MenuItem(Base):
     category_id: Mapped[int] = mapped_column(ForeignKey("menu_categories.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
+    image_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     price_paisa: Mapped[int] = mapped_column(Integer)  # integer paisa, never float
     currency: Mapped[str] = mapped_column(String(3), default="PKR")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)      # archived items are inactive

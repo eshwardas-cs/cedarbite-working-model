@@ -163,7 +163,7 @@ export default async (request) => {
 
     if (request.method !== "POST") return reply({ error: "Method not allowed." }, 405);
     const raw = await request.text();
-    if (raw.length > 64_000) return reply({ error: "Request is too large." }, 413);
+    if (raw.length > 4_000_000) return reply({ error: "Request is too large." }, 413);
     let body;
     try { body = JSON.parse(raw); } catch { return reply({ error: "Invalid JSON." }, 400); }
 
@@ -292,7 +292,7 @@ export default async (request) => {
       const items = categories.flatMap((category) => category.items);
       const itemIds = new Set();
       if (items.length > 200 || items.some((item) => {
-        if (!Number.isSafeInteger(item.id) || itemIds.has(item.id) || !categoryIds.has(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || typeof item.available !== "boolean" || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240))) return true;
+        if (!Number.isSafeInteger(item.id) || itemIds.has(item.id) || !categoryIds.has(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || typeof item.available !== "boolean" || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data)))) return true;
         itemIds.add(item.id);
         return false;
       })) return reply({ error: "Menu items are invalid." }, 400);

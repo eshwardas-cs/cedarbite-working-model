@@ -27,6 +27,7 @@ class ItemIn(BaseModel):
     category_id: int
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
+    image_data: str | None = Field(default=None, max_length=180_000, pattern=r"^data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}$")
     price_paisa: int = Field(ge=0, le=10_000_000)
     quick_allowed: bool = False
     scheduled_allowed: bool = True
@@ -43,6 +44,7 @@ class ItemPatch(BaseModel):
     category_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
+    image_data: str | None = Field(default=None, max_length=180_000, pattern=r"^data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}$")
     price_paisa: int | None = Field(default=None, ge=0, le=10_000_000)
     quick_allowed: bool | None = None
     scheduled_allowed: bool | None = None
