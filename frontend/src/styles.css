@@ -453,6 +453,29 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .deal-price-summary s{color:#aab9c9}
 :root[data-theme="dark"] .deal-price-summary b{color:#fff0b4}
 :root[data-theme="dark"] .deal-price-summary small,:root[data-theme="dark"] .cart-total.deal-savings-row{color:#9de1bd}
+/* Theme tokens keep low emphasis text and separators readable across every workspace. */
+:root[data-theme="dark"]{--ink:#e7edf5;--muted:#b2c0cf;--line:#33465d;--off:#1b2e43}
+:root[data-theme="dark"] .category-title h3{color:#f1f5fa}
+:root[data-theme="dark"] .menu-live,:root[data-theme="dark"] .category-title span,:root[data-theme="dark"] .stock-no,:root[data-theme="dark"] .deals-title>small{color:#b8c6d6}
+:root[data-theme="dark"] .sales-date-open.selected{border-color:#b89428;background:#332c19;color:#fff0b4}
+:root[data-theme="dark"] .sales-date-open.selected span{color:#e1cf93}
+:root[data-theme="dark"] .kitchen-ticket{border:1px solid #344a62;background:#142337;color:#f1f5fa}
+:root[data-theme="dark"] .kitchen-ticket>span{color:#ffe08a}
+:root[data-theme="dark"] .kitchen-ticket small{color:#b8c6d6}
+:root[data-theme="dark"] .kitchen-ticket li{color:#e7edf5}
+.theme-toggle-text{display:none}
+@media(max-width:1024px){
+  .header-actions .theme-toggle,.owner-top-actions .theme-toggle,.station-top-actions .theme-toggle{display:inline-flex;position:static;width:auto;height:auto;min-height:42px;padding:0 11px;border-radius:7px;font-size:10px;box-shadow:none}
+}
+@media(max-width:850px){
+  .owner-top-actions .owner-theme-toggle{display:inline-flex}
+  .station-top-actions .station-theme-toggle{display:inline-flex}
+}
+@media(max-width:680px){
+  .header-actions .theme-toggle{grid-column:1/-1;justify-content:center}
+  .theme-toggle-text{display:inline}
+  .owner-top-actions .theme-toggle,.station-top-actions .theme-toggle{min-width:100px;justify-content:center}
+}
 @media print{
   @page{size:auto;margin:5mm}
   html,body{min-width:0!important;margin:0!important;padding:0!important;background:#fff!important;color:#111!important}
