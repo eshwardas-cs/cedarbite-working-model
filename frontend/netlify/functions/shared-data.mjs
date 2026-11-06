@@ -10,6 +10,7 @@ const store = getStore({
 });
 
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
+const MENU_SEED_VERSION = 1;
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
 const transitions = { SUBMITTED: "PREPARING", ACCEPTED: "READY", PREPARING: "READY", READY: "COLLECTED" };
 const reportDayKey = (value) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
@@ -226,9 +227,11 @@ export default async (request) => {
       }
       if (url.searchParams.get("scope") === "menu") {
         let menu = await readJSON("menu/catalog");
-        if (!Array.isArray(menu?.categories)) {
+        const savedSeedVersion = Number(await readJSON("meta/menu-seed-version") ?? 0);
+        if (!Array.isArray(menu?.categories) || savedSeedVersion < MENU_SEED_VERSION) {
           menu = { categories: liveMenuSeed.categories };
           await store.setJSON("menu/catalog", menu);
+          await store.setJSON("meta/menu-seed-version", MENU_SEED_VERSION);
         }
         const availability = await readAvailabilityOverrides();
         const categories = menu.categories.map((category) => ({ ...category, items: category.items.map((item) => ({ ...item, available: availability[String(item.id)] ?? item.available })) }));
