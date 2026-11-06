@@ -452,7 +452,7 @@ img.counter-item-visual{display:block}
   .receipt-print{width:72mm;max-width:100%;margin:0 auto;padding:3mm 2mm;font:10pt/1.35 Arial,Helvetica,sans-serif;color:#111;background:#fff;break-inside:avoid}
   .receipt-print header{display:grid;justify-items:center;gap:2px;margin-bottom:7px}
   .receipt-brand{display:flex;align-items:center;justify-content:center;gap:7px;color:#111}
-  .receipt-brand .cedar-mark{width:27px;height:27px;filter:grayscale(1) contrast(4)}
+  .receipt-brand .receipt-logo-mark{width:27px;height:27px;flex:none;color:#111;print-color-adjust:exact;-webkit-print-color-adjust:exact}
   .receipt-print header b{font-size:20pt;letter-spacing:-.8px}
   .receipt-print header span{font-size:7pt;font-weight:700;letter-spacing:1.3px}
   .receipt-divider{border-top:1px dashed #555;margin:7px 0}
