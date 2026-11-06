@@ -618,6 +618,19 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .addon-prompt-actions>.blue-button{background:#ffc928;color:#102b4c}
 :root[data-theme="dark"] .addon-prompt-cancel{color:#c4d1df}
 @media(max-width:520px){.addon-prompt{padding:21px}.addon-prompt-actions{grid-template-columns:1fr}}
+@media(max-width:680px){
+  .header-actions .mobile-menu-theme-toggle{grid-column:1/-1;justify-self:end;display:inline-flex;width:auto;min-width:0;height:32px;min-height:32px;padding:0 3px;border:0;border-radius:999px;background:transparent;box-shadow:none;color:var(--ink);font-size:10px;gap:7px}
+  .mobile-menu-theme-toggle .theme-toggle-icon{display:none}
+  .mobile-menu-theme-toggle .theme-toggle-text{display:inline;color:var(--muted);font-size:10px;font-weight:700}
+  .mobile-menu-theme-toggle .theme-switch-track{width:36px;height:20px;padding:2px;display:flex;align-items:center;border:1px solid #9aa8b7;border-radius:999px;background:#c5ced8;transition:background .18s ease,border-color .18s ease}
+  .mobile-menu-theme-toggle .theme-switch-track i{width:14px;height:14px;display:block;border-radius:50%;background:#fff;box-shadow:0 1px 3px #102b4c44;transform:translateX(0);transition:transform .18s ease}
+  .mobile-menu-theme-toggle[aria-checked=true] .theme-switch-track{border-color:#d5a600;background:#ffc928}
+  .mobile-menu-theme-toggle[aria-checked=true] .theme-switch-track i{background:#102b4c;transform:translateX(16px)}
+  :root[data-theme=dark] .mobile-menu-theme-toggle{background:transparent;color:#e7edf5}
+  :root[data-theme=dark] .mobile-menu-theme-toggle .theme-toggle-text{color:#d1dce7}
+  :root[data-theme=dark] .mobile-menu-theme-toggle .theme-switch-track{border-color:#53677c;background:#33475d}
+  :root[data-theme=dark] .mobile-menu-theme-toggle[aria-checked=true] .theme-switch-track{border-color:#d5a600;background:#ffc928}
+}
 
 .counter-addon-option{margin-top:7px;display:flex;align-items:center;gap:6px;color:#5b6d82;font-size:9px;font-weight:700}.counter-addon-option input{width:14px;min-height:14px;accent-color:#173c64}
 :root[data-theme="dark"] .counter-addon-option{color:#d2dce7}
