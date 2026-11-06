@@ -341,6 +341,32 @@ export default async (request) => {
       return reply({ order: saved }, 201);
     }
 
+    if (body.action === "student-topup-request") {
+      const id = String(body.id ?? "");
+      const student_id = String(body.student_id ?? "");
+      const amount_paisa = Number(body.amount_paisa);
+      const method = String(body.method ?? "").toLowerCase();
+      if (!/^[a-f0-9-]{36}$/i.test(id) || !/^\d{7}$/.test(student_id) || !Number.isSafeInteger(amount_paisa) || amount_paisa < 10000 || amount_paisa > 500000 || !["easypaisa", "jazzcash", "bank", "card"].includes(method)) {
+        return reply({ error: "Enter a valid student ID, top-up amount, and payment method." }, 400);
+      }
+      const key = `wallet-topups/${id}`;
+      const existing = await readJSON(key);
+      if (existing) return reply({ entry: existing, duplicate: true });
+      const entry = {
+        id,
+        student_id,
+        amount_paisa,
+        kind: "credit",
+        method,
+        status: "PRACTICE_ONLY",
+        label: "Student top-up (practice only; payment not received)",
+        created_at: new Date().toISOString(),
+        recorded_by: "student dashboard",
+      };
+      await store.setJSON(key, entry);
+      return reply({ entry, duplicate: false }, 201);
+    }
+
     if (body.action === "cash-topup") {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record a top-up." }, 401);
