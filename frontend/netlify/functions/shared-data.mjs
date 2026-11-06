@@ -1,5 +1,6 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
+import liveMenuSeed from "../../shared/menu-seed.json" with { type: "json" };
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
@@ -224,8 +225,11 @@ export default async (request) => {
         return reply({ availability: await readAvailabilityOverrides() });
       }
       if (url.searchParams.get("scope") === "menu") {
-        const menu = await readJSON("menu/catalog");
-        if (!Array.isArray(menu?.categories)) return reply({ categories: null });
+        let menu = await readJSON("menu/catalog");
+        if (!Array.isArray(menu?.categories)) {
+          menu = { categories: liveMenuSeed.categories };
+          await store.setJSON("menu/catalog", menu);
+        }
         const availability = await readAvailabilityOverrides();
         const categories = menu.categories.map((category) => ({ ...category, items: category.items.map((item) => ({ ...item, available: availability[String(item.id)] ?? item.available })) }));
         return reply({ categories });
