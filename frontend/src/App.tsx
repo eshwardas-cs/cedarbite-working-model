@@ -188,6 +188,7 @@ export default function App() {
   const [selectedWindow, setSelectedWindow] = useState("");
   const [dealsActive, setDealsActive] = useState(false);
   const [orderingReason, setOrderingReason] = useState("Ordering is open");
+  const [showOrderingPausedPopup, setShowOrderingPausedPopup] = useState(false);
   const [demoEmail, setDemoEmail] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [walletBalance, setWalletBalance] = useState(0);
@@ -269,6 +270,23 @@ export default function App() {
       }) })));
     } catch { /* The static menu remains usable if shared availability is temporarily unavailable. */ }
   }, [request, user?.role]);
+
+  const loadOrderingStatus = useCallback(async () => {
+    try {
+      const result = user?.role?.startsWith("DEMO_") || !user
+        ? await request<{ paused: boolean }>(`${SHARED_DATA_URL}?scope=ordering-status`, { cache: "no-store" })
+        : await request<{ accepting_orders: boolean }>("/api/ordering/status", { cache: "no-store" });
+      const paused = "paused" in result ? result.paused : !result.accepting_orders;
+      setOrderingReason(paused ? "Online ordering is paused by the canteen." : "Ordering is open");
+    } catch {
+      if (user?.role?.startsWith("DEMO_") || !user) {
+        try {
+          const result = await request<{ paused: boolean }>(`${SHARED_DATA_URL}?scope=ordering-status`, { cache: "no-store" });
+          setOrderingReason(result.paused ? "Online ordering is paused by the canteen." : "Ordering is open");
+        } catch { /* The order service still enforces its saved setting when an order is submitted. */ }
+      }
+    }
+  }, [request, user]);
 
   const userRole = user?.role;
   const loadMenu = useCallback(async (manage = false) => {
@@ -401,6 +419,7 @@ export default function App() {
   useEffect(() => {
     document.title = page === "owner" ? "CedarBite Canteen Console" : page === "confirmation" ? "Order confirmed · CedarBite" : page === "about" ? "About CedarBite" : page === "privacy" ? "Privacy Policy · CedarBite" : page === "contact" ? "Contact CedarBite" : page === "team" ? "Team behind CedarBite" : "CedarBite — order your break";
     void loadMenu();
+    void loadOrderingStatus();
     void loadPickupSchedule().then((windows) => {
       pickupWindowsFromApiRef.current = true;
       setPickupWindows(windows);
@@ -420,7 +439,7 @@ export default function App() {
     } else setOrders([]);
     const params = new URLSearchParams(window.location.search);
     if (params.get("signin_error")) { setToast(params.get("signin_error") ?? "Cedar sign-in failed."); window.history.replaceState({}, "", window.location.pathname); }
-  }, [loadMenu, loadPickupSchedule, page, request]);
+  }, [loadMenu, loadOrderingStatus, loadPickupSchedule, page, request]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = darkMode ? "dark" : "light";
@@ -467,6 +486,7 @@ export default function App() {
   useEffect(() => {
     if (page !== "menu" && !(["owner", "order-manager", "counter", "cashdesk", "kitchen"] as Page[]).includes(page)) return;
     const refreshAvailability = () => {
+      void loadOrderingStatus();
       if (user?.role === "DEMO_CANTEEN") void loadSharedAvailability();
       else if (user?.role === "DEMO_STUDENT") void loadMenu();
       else void loadMenu(Boolean(user?.permissions.includes("menu.manage") || user?.permissions.includes("availability.toggle")));
@@ -476,7 +496,7 @@ export default function App() {
       if (!document.hidden) refreshAvailability();
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [loadMenu, loadSharedAvailability, page, user]);
+  }, [loadMenu, loadOrderingStatus, loadSharedAvailability, page, user]);
 
   const canManage = user?.permissions.includes("menu.manage") ?? false;
   const canToggle = user?.permissions.includes("availability.toggle") ?? false;
@@ -676,7 +696,7 @@ export default function App() {
     if (orderSubmittingRef.current) return;
     if (user?.role !== "DEMO_STUDENT") { setToast("Sign in with a Cedar email to place an order."); return; }
     if (!cartCount) return;
-    if (orderingReason.includes("paused")) { setToast("Ordering is paused in the canteen console."); return; }
+    if (orderingReason.includes("paused")) { setShowOrderingPausedPopup(true); return; }
     const selectedPickupWindow = orderMode === "scheduled"
       ? availablePickupWindows.find((window) => String(window.id) === selectedWindow)
       : null;
@@ -724,6 +744,11 @@ export default function App() {
       setShowOrderConfirmation(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not send this order to the canteen. Your bucket is unchanged.";
+      if (message === "We are currently not accepting orders." || message === "Online ordering is paused by the canteen.") {
+        setShowOrderingPausedPopup(true);
+        setOrderError("");
+        return;
+      }
       setOrderError(message);
     }
     finally { orderSubmittingRef.current = false; setOrderSubmitting(false); }
@@ -1068,9 +1093,12 @@ export default function App() {
     }
   }
   async function toggleOrdering() {
-    if (user?.role === "DEMO_CANTEEN") { setOrderingReason((current) => current.includes("paused") ? "Ordering is open" : "Ordering is paused"); return; }
-    const paused = orderingReason !== "Online ordering is paused by the canteen.";
-    try { await request("/api/ordering/pause", { method: "POST", body: JSON.stringify({ paused }) }); setOrderingReason(paused ? "Online ordering is paused by the canteen." : "Ordering is open"); }
+    const paused = !orderingReason.includes("paused");
+    try {
+      if (user?.role === "DEMO_CANTEEN") await request(`${SHARED_DATA_URL}`, { method: "POST", body: JSON.stringify({ action: "set-ordering", paused }) });
+      else await request("/api/ordering/pause", { method: "POST", body: JSON.stringify({ paused }) });
+      setOrderingReason(paused ? "Online ordering is paused by the canteen." : "Ordering is open");
+    }
     catch (error) { setToast(error instanceof Error ? error.message : "Ordering status was not changed."); }
   }
   function saveDeal(event: FormEvent<HTMLFormElement>) {
@@ -1140,6 +1168,7 @@ export default function App() {
       <section className="how-it-works"><div><span className="section-kicker">TWO WAYS TO ORDER</span><h2>Made for <span>your day.</span></h2><p className="section-subcopy">Different food, different pickup. The canteen chooses which items and times it can support.</p></div><div className="ordering-modes"><article><span className="mode-icon">↗</span><div><small>01 · READY TO SELL</small><h3>Quick Order</h3><p>Choose a ready-made item, add it to your bucket, and move it through the canteen queue. No pickup slot is needed.</p></div></article><article><span className="mode-icon blue">◷</span><div><small>02 · MADE FRESH</small><h3>Scheduled Order</h3><p>For food that needs preparation, choose from pickup windows supported by the canteen.</p></div></article></div></section>      <section className="payment-note"><div><span className="section-kicker">CEDARBITE WALLET</span><h2>Top up. <span>Order. Enjoy.</span></h2><p>Top up your CedarBite wallet and choose a payment method at checkout. Online payment providers are not connected. Transfers selected here are not verified or received by CedarBite.</p><button className="blue-button" onClick={() => user?.role === "DEMO_STUDENT" ? setWalletOpen(true) : loginDialog.current?.showModal()}>Open wallet <span>→</span></button></div><div className="payment-pills"><span>EasyPaisa</span><span>JazzCash</span><span>Bank transfer</span><span>Card</span><span>Cash at pickup</span></div></section>
     </main>}
     <footer className="store-footer"><div className="footer-main"><div><button className="wordmark footer-mark" onClick={() => navigate("menu")}><CedarMark/><span>Cedar<span>Bite</span></span></button><p>Queue · Order · Enjoy</p></div><div><b>Explore</b><button onClick={() => navigate("menu")}>Menu</button><button onClick={() => { navigate("menu"); setDealsActive(true); setTimeout(() => document.getElementById("deals")?.scrollIntoView({ behavior:"smooth" }),0); }}>Deals</button><button onClick={() => navigate("about")}>About us</button><button onClick={() => navigate("stations")}>Staff stations</button></div><div><b>Help & information</b><button onClick={() => navigate("contact")}>Contact us</button><button onClick={() => navigate("privacy")}>Privacy policy</button></div><div><b>Team behind CedarBite</b><button className="team-footer-link" onClick={() => navigate("team")}>Meet the team <span aria-hidden="true">↗</span></button></div></div><div className="footer-bottom"><span>© {new Date().getFullYear()} CedarBite. All rights reserved.</span></div></footer>
+    {showOrderingPausedPopup && <div className="addon-prompt-scrim" onClick={() => setShowOrderingPausedPopup(false)}><section className="addon-prompt ordering-paused-popup" role="dialog" aria-modal="true" aria-labelledby="ordering-paused-title" onClick={(event) => event.stopPropagation()}><span className="section-kicker">ORDERING UPDATE</span><h2 id="ordering-paused-title">We are currently not accepting orders.</h2><button type="button" className="blue-button" autoFocus onClick={() => setShowOrderingPausedPopup(false)}>Close</button></section></div>}
     {addOnPromptItem && <div className="addon-prompt-scrim" onClick={() => setAddOnPromptItem(null)}><section className="addon-prompt" role="dialog" aria-modal="true" aria-labelledby="addon-prompt-title" onClick={(event) => event.stopPropagation()}><span className="section-kicker">MAKE IT YOURS</span><h2 id="addon-prompt-title">Add {addOnPromptItem.addon_name}?</h2><p>{addOnPromptItem.name} is {money(addOnPromptItem.price_paisa)}. Add {addOnPromptItem.addon_name} for {money(addOnPromptItem.addon_price_paisa ?? 0)} more?</p><div className="addon-prompt-actions"><button type="button" onClick={() => { addToCart(addOnPromptItem.id); setAddOnPromptItem(null); setCartOpen(true); }}>No thanks · {money(addOnPromptItem.price_paisa)}</button><button type="button" className="blue-button" onClick={() => { addToCart(addOnPromptItem.id, 1, true); setAddOnPromptItem(null); setCartOpen(true); }}>Add {addOnPromptItem.addon_name} · {money(addOnPromptItem.price_paisa + (addOnPromptItem.addon_price_paisa ?? 0))}</button></div><button type="button" className="addon-prompt-cancel" onClick={() => setAddOnPromptItem(null)}>Cancel</button></section></div>}
     {cartOpen && <div className="cart-scrim" onClick={() => setCartOpen(false)}><aside className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Your bucket"><div className="cart-head"><div><span className="section-kicker">YOUR ORDER</span><h2>Your bucket <small>({cartCount})</small></h2></div><button onClick={() => setCartOpen(false)} aria-label="Close bucket">×</button></div><div className="cart-service"><b>Pickup</b><span>{orderMode === "quick" ? "Quick Order · no slot required" : "Scheduled Order · choose a slot"}</span></div>{orderMode === "scheduled" && <label className="bucket-window">Choose your pickup slot<select value={selectedWindow} onChange={(event) => setSelectedWindow(event.target.value)}><option value="">{availablePickupWindows.length ? "Choose from the next available pickup slots" : "No pickup slots are available right now"}</option>{availablePickupWindows.slice(0, 6).map((window) => <option key={window.id} value={window.id}>{new Date(window.start_at).toLocaleString("en-PK", { timeZone:"Asia/Karachi", weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit" })} – {formatPickupTime(window.end_at)}</option>)}</select></label>}<div className="cart-lines">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([key, quantity]) => { const [rawId, variant] = key.split(":"); const item = items.find((entry) => entry.id === Number(rawId)); if (!item) return null; const withAddon = variant === "addon"; const unitPrice = item.price_paisa + (withAddon ? item.addon_price_paisa ?? 0 : 0); const lineName = `${item.name.replace("[DEV SAMPLE] ", "")}${withAddon && item.addon_name ? ` + ${item.addon_name}` : ""}`; return <div className="cart-line" key={key}><div><b>{lineName}</b><small>{money(unitPrice)} each{withAddon ? " · add-on included" : ""}</small></div><div className="quantity-controls"><button onClick={() => addToCart(item.id, -1, withAddon)} aria-label={`Remove one ${lineName}`}>−</button><b>{quantity}</b><button onClick={() => addToCart(item.id, 1, withAddon)} aria-label={`Add one ${lineName}`}>+</button></div><strong>{money(unitPrice * quantity)}</strong></div>; })}{!cartCount && <div className="cart-empty"><span>▣</span><h3>Your bucket is empty</h3><p>Add a menu item to start building your order.</p><button className="blue-button" onClick={() => { setCartOpen(false); document.getElementById("menu")?.scrollIntoView({behavior:"smooth"}); }}>Browse menu</button></div>}</div><div className="cart-bottom"><div className="cart-total"><span>Subtotal</span><b>{money(cartTotal)}</b></div><label className="demo-payment">Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="wallet">CedarBite wallet · {money(walletBalance)}</option><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="cash">Cash at pickup</option></select></label><p className="checkout-hint">Review your items and pickup details before placing the order.</p>{orderError && <p className="order-error" role="alert">{orderError}</p>}<button className="checkout-button" disabled={!cartCount || orderSubmitting || user?.role !== "DEMO_STUDENT" || (orderMode === "scheduled" && !selectedWindow)} onClick={placeDemoOrder}>{orderSubmitting ? "Sending order…" : user?.role === "DEMO_STUDENT" ? "Place order" : "Sign in to place an order"}</button>{user?.role !== "DEMO_STUDENT" && <button className="cart-signin" onClick={() => loginDialog.current?.showModal()}>Sign in with your Cedar email</button>}</div></aside></div>}
     <dialog className="signin-dialog" ref={loginDialog}><button className="dialog-x" onClick={() => loginDialog.current?.close()} aria-label="Close sign in">×</button><CedarMark/><span className="section-kicker">WELCOME TO CEDARBITE</span><h2>Sign in with your<br/><span>cedar email</span></h2><p>Sign in with your Cedar College email to access student ordering and wallet features.</p>{googleReady ? <button className="google-button" onClick={startSignIn}><GoogleIcon/> Sign in with Google account</button> : <form className="demo-signin-form" onSubmit={(event) => { event.preventDefault(); demoSignIn(demoEmail); }}><label>Cedar email<input type="email" required value={demoEmail} onChange={(event) => setDemoEmail(event.target.value)} placeholder="your.email@cedar.edu.pk"/></label><button className="google-button">Continue with Cedar email</button><small>Cedar College account</small></form>}<small className="secure-hint">Your profile and wallet activity are saved in this browser.</small></dialog>

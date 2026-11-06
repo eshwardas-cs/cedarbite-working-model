@@ -205,6 +205,10 @@ export default async (request) => {
   try {
     const url = new URL(request.url);
     if (request.method === "GET") {
+      if (url.searchParams.get("scope") === "ordering-status") {
+        const settings = await readJSON("settings/ordering") || { paused: false };
+        return reply({ paused: settings.paused === true });
+      }
       if (url.searchParams.get("scope") === "student-wallet") {
         const studentId = String(url.searchParams.get("student_id") ?? "");
         if (!/^\d{7}$/.test(studentId)) return reply({ error: "Enter a valid Cedar student ID." }, 400);
@@ -315,6 +319,8 @@ export default async (request) => {
     }
 
     if (body.action === "create-order") {
+      const orderingSettings = await readJSON("settings/ordering");
+      if (orderingSettings?.paused === true) return reply({ error: "We are currently not accepting orders." }, 409);
       const order = body.order;
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
@@ -439,6 +445,12 @@ export default async (request) => {
 
     if (!await managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
     if (!await isManager(request)) return reply({ error: "Sign in to the order control station to change shared data." }, 401);
+
+    if (body.action === "set-ordering") {
+      if (typeof body.paused !== "boolean") return reply({ error: "Choose whether online ordering is paused." }, 400);
+      await store.setJSON("settings/ordering", { paused: body.paused, updated_at: new Date().toISOString(), updated_by: request.headers.get("x-canteen-username") || "order_manager" });
+      return reply({ paused: body.paused });
+    }
 
     if (body.action === "add-menu-item") {
       const item = body.item;
