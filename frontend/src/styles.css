@@ -402,6 +402,13 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .receipt-print-button{border-color:#40546b;background:#1b2e43;color:#f1f5fa}
 :root[data-theme="dark"] .receipt-print-button:hover{border-color:#c5a834;background:#3a321b;color:#ffe08a}
 .history-actions{display:flex;align-items:center;gap:7px}
+.history-refund-button{min-height:35px;padding:0 10px;border:1px solid #c9d9ea;border-radius:7px;background:#eef6ff;color:#174b78;font-size:12px;font-weight:750;cursor:pointer;white-space:nowrap}
+.history-refund-button:hover:not(:disabled){border-color:#3b76aa;background:#dceeff;color:#103a62}
+.history-refund-button:disabled{opacity:.55;cursor:not-allowed}
+.refund-complete-label{color:#16704a;font-size:12px;font-weight:750;white-space:nowrap}
+:root[data-theme="dark"] .history-refund-button{border-color:#49647f;background:#203a53;color:#d8ebff}
+:root[data-theme="dark"] .history-refund-button:hover:not(:disabled){border-color:#77a9d6;background:#294a68;color:#fff}
+:root[data-theme="dark"] .refund-complete-label{color:#8ce0b3}
 .history-delete-button{width:35px;height:35px;flex:none;display:grid;place-items:center;border:1px solid #ead8d8;border-radius:7px;background:#fff7f7;color:#a83e43;cursor:pointer}
 .history-delete-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .history-delete-button:hover{border-color:#c95359;background:#ffe8e8;color:#8d2027}

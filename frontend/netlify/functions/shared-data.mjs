@@ -204,6 +204,13 @@ export default async (request) => {
   try {
     const url = new URL(request.url);
     if (request.method === "GET") {
+      if (url.searchParams.get("scope") === "student-wallet") {
+        const studentId = String(url.searchParams.get("student_id") ?? "");
+        if (!/^\d{7}$/.test(studentId)) return reply({ error: "Enter a valid Cedar student ID." }, 400);
+        const wallet = await readJSON(`wallets/${studentId}`) || { entries: [] };
+        const entries = (Array.isArray(wallet.entries) ? wallet.entries : []).filter((entry) => entry?.kind === "credit").slice(0, 200);
+        return reply({ entries });
+      }
       if (url.searchParams.get("scope") === "availability") {
         return reply({ availability: await readAvailabilityOverrides() });
       }
@@ -337,7 +344,7 @@ export default async (request) => {
         student_id: order.student_id == null ? null : String(order.student_id),
         source: "ONLINE",
         payment_method: ["cash", "wallet", "easypaisa", "jazzcash", "bank", "card"].includes(order.payment_method) ? order.payment_method : "cash",
-        payment_status: order.payment_method === "cash" ? "UNPAID" : "PENDING",
+        payment_status: order.payment_method === "wallet" ? "PAID" : order.payment_method === "cash" ? "UNPAID" : "PENDING",
       };
       await store.setJSON(`queue/${saved.id}`, saved);
       const studentOrder = { ...saved };
@@ -551,6 +558,37 @@ export default async (request) => {
       if (!order) return reply({ error: "This order is no longer in order history." }, 404);
       await store.delete(key);
       return reply({ deleted: true, order_id: body.order_id });
+    }
+
+    if (body.action === "refund-order") {
+      if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
+      if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to refund an order." }, 401);
+      if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
+      const key = `history/${body.order_id}`;
+      const order = await readJSON(key);
+      if (!order) return reply({ error: "This completed order is no longer in order history." }, 404);
+      if (order.refund_status === "REFUNDED") return reply({ order, duplicate: true });
+      const method = String(order.payment_method ?? "cash");
+      const amount = orderTotalPaisa(order);
+      if (!Number.isSafeInteger(amount) || amount <= 0) return reply({ error: "This order does not have a refundable total." }, 409);
+      if (method === "wallet") {
+        if (!/^\d{7}$/.test(String(order.student_id ?? ""))) return reply({ error: "This wallet order is missing its student ID, so the refund cannot be credited safely." }, 409);
+        const studentId = String(order.student_id);
+        const refundId = `refund-${String(order.id)}`;
+        const refundKey = `wallet-refunds/${String(order.id)}`;
+        const walletKey = `wallets/${studentId}`;
+        const wallet = await readJSON(walletKey) || { balance_paisa: 0, entries: [] };
+        const walletEntries = Array.isArray(wallet.entries) ? wallet.entries : [];
+        const entry = walletEntries.find((saved) => String(saved.id) === refundId) || { id: refundId, student_id: studentId, kind: "credit", amount_paisa: amount, method: "wallet_refund", label: `Refund for order ${order.pickup_code}`, created_at: new Date().toISOString(), recorded_by: request.headers.get("x-canteen-username") || "manager", status: "REFUNDED" };
+        if (!walletEntries.some((saved) => String(saved.id) === refundId)) await store.setJSON(walletKey, { balance_paisa: (Number(wallet.balance_paisa) || 0) + amount, entries: [entry, ...walletEntries].slice(0, 200) });
+        await store.setJSON(`wallet-topups/${refundId}`, entry);
+        await store.setJSON(refundKey, entry);
+      } else if (order.payment_status !== "PAID") {
+        return reply({ error: "No payment has been recorded for this order. Unpaid orders cannot be refunded." }, 409);
+      }
+      const updated = { ...order, refund_status: "REFUNDED", refund_method: method === "wallet" ? "wallet" : "manual", refunded_at: new Date().toISOString(), refunded_by: request.headers.get("x-canteen-username") || "manager", refund_amount_paisa: amount };
+      await store.setJSON(key, updated);
+      return reply({ order: updated });
     }
 
     if (body.action === "set-status") {
