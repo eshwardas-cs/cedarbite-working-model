@@ -205,6 +205,8 @@ export default async (request) => {
         const allOrders = [...queue, ...history];
         if (url.searchParams.get("scope") === "sales-dates") {
           const reports = await readByPrefix("sales/daily/");
+          const removedReports = await readByPrefix("sales/removed/");
+          const removedDates = new Set(removedReports.map((report) => report.date));
           const dates = new Set([today, ...reports.map((report) => report.date)]);
           for (const order of allOrders) {
             const createdDate = orderDay(order.created_at);
@@ -214,10 +216,11 @@ export default async (request) => {
               if (paidDate) dates.add(paidDate);
             }
           }
-          return reply({ dates: [...dates].filter((date) => validReportDay(date) && date <= today).sort((a, b) => b.localeCompare(a)) });
+          return reply({ dates: [...dates].filter((date) => validReportDay(date) && date <= today && !removedDates.has(date)).sort((a, b) => b.localeCompare(a)) });
         }
         const date = url.searchParams.get("date");
         if (!validReportDay(date) || date > today) return reply({ error: "Choose a valid report date up to today." }, 400);
+        if (await readJSON(`sales/removed/${date}`)) return reply({ error: "This daily summary has been removed." }, 404);
         const reportKey = `sales/daily/${date}`;
         const savedReport = await readJSON(reportKey);
         if (date !== today && savedReport) return reply({ report: savedReport });
@@ -374,6 +377,15 @@ export default async (request) => {
 
     if (!await managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
     if (!await isManager(request)) return reply({ error: "Sign in to the order control station to change shared data." }, 401);
+
+    if (body.action === "delete-sales-summary") {
+      const date = String(body.date ?? "");
+      const today = reportDayKey(new Date());
+      if (!validReportDay(date) || date >= today) return reply({ error: "Only a previous day summary can be removed." }, 400);
+      await store.setJSON(`sales/removed/${date}`, { date, removed_at: new Date().toISOString() });
+      await store.delete(`sales/daily/${date}`);
+      return reply({ deleted: true, date });
+    }
 
     if (body.action === "set-menu") {
       const categories = body.categories;
