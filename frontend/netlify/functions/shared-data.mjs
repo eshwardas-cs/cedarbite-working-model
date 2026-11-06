@@ -411,6 +411,38 @@ export default async (request) => {
       return reply({ categories, item: addedItem }, 201);
     }
 
+    if (body.action === "update-menu-item") {
+      const item = body.item;
+      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.id) || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data)))) return reply({ error: "Menu item details are invalid. Check the name, description, price, image, and pickup type." }, 400);
+      const catalog = await readJSON("menu/catalog");
+      if (!Array.isArray(catalog?.categories)) return reply({ error: "The shared menu is not ready. Refresh the page and try again." }, 409);
+      const categories = catalog.categories.map((category) => ({ ...category, items: Array.isArray(category.items) ? [...category.items] : [] }));
+      const source = categories.find((category) => category.items.some((entry) => entry.id === item.id));
+      const target = categories.find((category) => category.id === item.category_id);
+      if (!source || !target) return reply({ error: "This item or category is no longer on the shared menu. Refresh and try again." }, 409);
+      const itemIndex = source.items.findIndex((entry) => entry.id === item.id);
+      const current = source.items[itemIndex];
+      const updatedItem = {
+        ...current,
+        category_id: target.id,
+        name: item.name.trim(),
+        description: item.description.trim(),
+        price_paisa: item.price_paisa,
+        price_display: `Rs ${Math.round(item.price_paisa / 100).toLocaleString("en-PK")}`,
+        quick_allowed: item.quick_allowed,
+        scheduled_allowed: item.scheduled_allowed,
+        prep_minutes: item.prep_minutes ?? null,
+        image_data: item.image_data ?? null,
+      };
+      if (source.id === target.id) source.items[itemIndex] = updatedItem;
+      else {
+        source.items.splice(itemIndex, 1);
+        target.items.push(updatedItem);
+      }
+      await store.setJSON("menu/catalog", { categories });
+      return reply({ categories, item: updatedItem });
+    }
+
     if (body.action === "delete-sales-summary") {
       const date = String(body.date ?? "");
       const today = reportDayKey(new Date());
