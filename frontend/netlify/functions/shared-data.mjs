@@ -201,6 +201,7 @@ async function migrateLegacyQueue() {
 }
 
 export default async (request) => {
+  let operation = request.method === "GET" ? "load shared canteen data" : "save shared canteen data";
   try {
     const url = new URL(request.url);
     if (request.method === "GET") {
@@ -283,6 +284,7 @@ export default async (request) => {
     if (raw.length > 4_000_000) return reply({ error: "Request is too large." }, 413);
     let body;
     try { body = JSON.parse(raw); } catch { return reply({ error: "Invalid JSON." }, 400); }
+    if (typeof body.action === "string") operation = body.action;
 
     if (body.action === "login") {
       const station = typeof body.station === "string" ? body.station : "order_manager";
@@ -615,7 +617,12 @@ export default async (request) => {
 
     return reply({ error: "Unknown action." }, 400);
   } catch (error) {
-    console.error("CedarBite shared data request failed", error);
-    return reply({ error: "Shared orders are temporarily unavailable. Please retry." }, 500);
+    console.error("CedarBite shared data request failed", { operation, error });
+    const message = operation === "add-menu-item"
+      ? "The menu item could not be saved. Refresh the menu and try again."
+      : operation === "create-order"
+        ? "The order could not be sent to the canteen. Your bucket is still here; please try again."
+        : "CedarBite could not complete that request. Refresh and try again.";
+    return reply({ error: message }, 500);
   }
 };
