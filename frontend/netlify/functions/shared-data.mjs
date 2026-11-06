@@ -570,7 +570,7 @@ export default async (request) => {
       const order = await readJSON(key);
       if (!order) return reply({ error: "This completed order is no longer in order history." }, 404);
       if (order.refund_status === "REFUNDED") return reply({ order, duplicate: true });
-      const method = String(order.payment_method ?? "cash");
+      const method = String(order.payment_method ?? "cash").trim().toLowerCase();
       const amount = orderTotalPaisa(order);
       if (!Number.isSafeInteger(amount) || amount <= 0) return reply({ error: "This order does not have a refundable total." }, 409);
       if (method === "wallet") {
@@ -585,7 +585,7 @@ export default async (request) => {
         if (!walletEntries.some((saved) => String(saved.id) === refundId)) await store.setJSON(walletKey, { balance_paisa: (Number(wallet.balance_paisa) || 0) + amount, entries: [entry, ...walletEntries].slice(0, 200) });
         await store.setJSON(`wallet-topups/${refundId}`, entry);
         await store.setJSON(refundKey, entry);
-      } else if (order.payment_status !== "PAID") {
+      } else if (String(order.payment_status ?? "").trim().toUpperCase() !== "PAID") {
         return reply({ error: "No payment has been recorded for this order. Unpaid orders cannot be refunded." }, 409);
       }
       const updated = { ...order, refund_status: "REFUNDED", refund_method: method === "wallet" ? "wallet" : "manual", refunded_at: new Date().toISOString(), refunded_by: request.headers.get("x-canteen-username") || "manager", refund_amount_paisa: amount };
