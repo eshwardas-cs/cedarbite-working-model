@@ -513,3 +513,4 @@ img.counter-item-visual{display:block}
 .kitchen-back-link:hover{text-decoration:underline;color:#fff}
 @media(max-width:850px){.owner-nav-content .owner-all-stations-link{display:block;grid-column:1/-1;padding:9px 10px;border-top:1px solid #ffffff2b;color:#e0e8f1;text-decoration:none;font-size:10px;font-weight:700}}
 :root[data-theme="dark"] .owner-nav-content .owner-all-stations-link{color:#e0e8f1}
+:root .owner-loading{min-height:100vh;display:grid;place-items:center;padding:24px;background:#f6f8fb;color:#102b4c;font-size:14px;font-weight:700}:root[data-theme="dark"] .owner-loading{background:#101c2b;color:#edf3f9}.menu-loading-message{min-height:250px;font-weight:700;color:var(--navy)}
