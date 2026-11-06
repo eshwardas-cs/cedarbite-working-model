@@ -176,7 +176,7 @@ function priceSharedOrderLines(catalog, lines, mode) {
   for (const line of lines) {
     const item = menuItems.get(String(line.item_id));
     if (!item || item.available === false) return { error: `${line.name} is no longer available. Refresh the menu and try again.` };
-    if (mode === "QUICK" && !item.quick_allowed || mode === "SCHEDULED" && !item.scheduled_allowed) return { error: `${item.name} is not available for this order type.` };
+    if (mode === "QUICK" && !item.quick_allowed || mode === "SCHEDULED" && !item.scheduled_allowed && !item.quick_allowed) return { error: `${item.name} is not available for this order type.` };
     const addon_selected = line.addon_selected === true;
     if (addon_selected && !item.addon_name) return { error: `The optional extra for ${item.name} is no longer available. Refresh your bucket.` };
     const addonPrice = addon_selected ? Number(item.addon_price_paisa ?? 0) : 0;
@@ -208,6 +208,10 @@ export default async (request) => {
       if (url.searchParams.get("scope") === "ordering-status") {
         const settings = await readJSON("settings/ordering") || { paused: false };
         return reply({ paused: settings.paused === true });
+      }
+      if (url.searchParams.get("scope") === "deals") {
+        const deals = await readJSON("menu/deals");
+        return reply({ deals: Array.isArray(deals) ? deals : null });
       }
       if (url.searchParams.get("scope") === "student-wallet") {
         const studentId = String(url.searchParams.get("student_id") ?? "");
@@ -336,14 +340,39 @@ export default async (request) => {
         const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
         if (!slotAvailable) return reply({ error: "That pickup slot is full or no longer available. Choose another 10-minute slot." }, 409);
       }
-      const pricedOrder = priceSharedOrderLines(await readJSON("menu/catalog"), order.items, order.mode);
+      const catalog = await readJSON("menu/catalog");
+      const dealIds = order.deal_ids ?? [];
+      if (!Array.isArray(dealIds) || dealIds.length > 20 || dealIds.some((id) => typeof id !== "string" || id.length > 80)) return reply({ error: "Deal details are invalid." }, 400);
+      const savedDeals = await readJSON("menu/deals") || [];
+      const remainingQuantities = new Map();
+      for (const line of order.items) remainingQuantities.set(line.item_id, (remainingQuantities.get(line.item_id) || 0) + line.quantity);
+      let dealDiscountPaisa = 0;
+      for (const dealId of dealIds) {
+        const deal = savedDeals.find((entry) => entry.id === dealId && entry.active === true);
+        if (!deal || !Array.isArray(deal.item_ids) || !deal.item_ids.length) return reply({ error: "This deal is no longer available. Refresh the menu and try again." }, 409);
+        let regularDealTotal = 0;
+        for (const itemId of deal.item_ids) {
+          const item = catalog?.categories?.flatMap((category) => category.items ?? []).find((entry) => entry.id === itemId);
+          if (!item || item.available === false || (remainingQuantities.get(itemId) || 0) < 1) return reply({ error: "Add every item in the deal to your bucket before placing the order." }, 409);
+          remainingQuantities.set(itemId, remainingQuantities.get(itemId) - 1);
+          regularDealTotal += item.price_paisa;
+        }
+        if (deal.price_paisa != null) {
+          if (!Number.isSafeInteger(deal.price_paisa) || deal.price_paisa < 0) return reply({ error: "The deal price is invalid. Ask the canteen manager to update it." }, 409);
+          dealDiscountPaisa += Math.max(0, regularDealTotal - deal.price_paisa);
+        }
+      }
+      const pricedOrder = priceSharedOrderLines(catalog, order.items, order.mode);
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
+      if (dealDiscountPaisa > pricedOrder.total_paisa) return reply({ error: "The deal price could not be applied. Refresh the menu and try again." }, 409);
       const saved = {
         id: order.id,
         status: "SUBMITTED",
         mode: order.mode === "SCHEDULED" ? "SCHEDULED" : "QUICK",
-        total_paisa: pricedOrder.total_paisa,
-        total_display: pricedOrder.total_display,
+        total_paisa: pricedOrder.total_paisa - dealDiscountPaisa,
+        total_display: `Rs ${Math.round((pricedOrder.total_paisa - dealDiscountPaisa) / 100).toLocaleString("en-PK")}`,
+        deal_discount_paisa: dealDiscountPaisa,
+        deal_ids: dealIds,
         pickup_code: order.pickup_code,
         created_at: new Date().toISOString(),
         pickup_window: order.pickup_window && typeof order.pickup_window === "object" ? order.pickup_window : null,
@@ -450,6 +479,32 @@ export default async (request) => {
       if (typeof body.paused !== "boolean") return reply({ error: "Choose whether online ordering is paused." }, 400);
       await store.setJSON("settings/ordering", { paused: body.paused, updated_at: new Date().toISOString(), updated_by: request.headers.get("x-canteen-username") || "order_manager" });
       return reply({ paused: body.paused });
+    }
+
+    if (body.action === "set-deals") {
+      if (!Array.isArray(body.deals) || body.deals.length > 50) return reply({ error: "Deal list is invalid." }, 400);
+      let catalog = await readJSON("menu/catalog");
+      if (!Array.isArray(catalog?.categories)) {
+        const bootstrap = body.bootstrap_categories;
+        if (!Array.isArray(bootstrap) || bootstrap.length < 1 || bootstrap.length > 30 || bootstrap.some((category) => !Number.isSafeInteger(category.id) || typeof category.name !== "string" || !category.name.trim() || category.name.length > 80 || !Array.isArray(category.items))) return reply({ error: "The shared menu is not ready. Refresh it and try again." }, 409);
+        catalog = { categories: bootstrap };
+        await store.setJSON("menu/catalog", catalog);
+      }
+      const catalogItems = new Map(catalog.categories.flatMap((category) => category.items ?? []).map((item) => [item.id, item]));
+      const ids = new Set();
+      for (const deal of body.deals) {
+        if (!deal || typeof deal.id !== "string" || !deal.id || deal.id.length > 80 || ids.has(deal.id) || typeof deal.title !== "string" || !deal.title.trim() || deal.title.length > 80 || typeof deal.description !== "string" || deal.description.length > 220 || typeof deal.active !== "boolean" || !Array.isArray(deal.item_ids) || deal.item_ids.length < 1 || deal.item_ids.length > 30 || new Set(deal.item_ids).size !== deal.item_ids.length) return reply({ error: "Check the deal title, description, and selected items." }, 400);
+        ids.add(deal.id);
+        let regularTotal = 0;
+        for (const itemId of deal.item_ids) {
+          const item = catalogItems.get(itemId);
+          if (!Number.isSafeInteger(itemId) || !item || item.available === false) return reply({ error: "A selected deal item is no longer available. Refresh the menu." }, 409);
+          regularTotal += item.price_paisa;
+        }
+        if (deal.price_paisa != null && (!Number.isSafeInteger(deal.price_paisa) || deal.price_paisa < 0 || deal.price_paisa > regularTotal)) return reply({ error: "Deal price must be a valid amount no higher than the regular item total." }, 400);
+      }
+      await store.setJSON("menu/deals", body.deals);
+      return reply({ deals: body.deals });
     }
 
     if (body.action === "add-menu-item") {

@@ -72,9 +72,8 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(resolve_order_mode([self.Q, self.BOTH]), Mode.QUICK)
     def test_mixed_becomes_scheduled(self):
         self.assertEqual(resolve_order_mode([self.BOTH, self.SC]), Mode.SCHEDULED)
-    def test_quick_only_plus_scheduled_only_must_split(self):
-        with self.assertRaises(NoValidMode):
-            resolve_order_mode([self.Q, self.SC])
+    def test_quick_only_plus_scheduled_only_becomes_scheduled(self):
+        self.assertEqual(resolve_order_mode([self.Q, self.SC]), Mode.SCHEDULED)
     def test_empty_and_impossible(self):
         with self.assertRaises(NoValidMode): resolve_order_mode([])
         with self.assertRaises(NoValidMode): resolve_order_mode([ItemRules(False, False)])

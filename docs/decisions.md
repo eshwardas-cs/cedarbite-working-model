@@ -1,7 +1,7 @@
 # Decisions and assumptions
-1. **Mixed carts**: all items quick-eligible -> Quick Order (no slot). Else all
-   scheduled-eligible -> whole order Scheduled. Else ask the student to split.
-   Chosen as the simplest operationally sound option; confirm with canteen staff.
+1. **Mixed carts**: if every item is quick-eligible, use Quick Order. Otherwise,
+   use Scheduled Order so ready-to-sell items can be held with prepared food for
+   the selected pickup window.
 2. **Money**: integer paisa, never floats.
 3. **Config**: stdlib dataclass reading env vars; production refuses weak secrets,
    SQLite, or a missing email domain.
@@ -10,11 +10,11 @@
 ## Orders (added with the order system)
 5. **Cart**: the browser keeps the list of (item, quantity); the server never trusts it.
    `POST /api/orders/quote` prices a cart from current database prices and lists problems
-   (unavailable items, bad quantities, mixed modes). `POST /api/orders` re-checks everything.
+   (unavailable items and bad quantities). `POST /api/orders` re-checks everything.
    If the browser sends the total it saw and prices have since changed, the order is refused (409)
    and the new total is shown. Extra fields such as a client "price" or "status" are ignored.
-6. **Mixed carts**: quick-only + made-to-order-only items cannot share an order; the student is
-   asked to place two orders. Items that allow both modes can join either kind of cart.
+6. **Mixed carts**: quick-ready items can be combined with prepared items. If any item
+   needs Scheduled Order, the entire cart uses Scheduled Order and a pickup window.
 7. **Quick vs Scheduled**: Quick orders must not carry a pickup window; Scheduled orders must.
    A window must start at least (longest preparation time, minimum 5 minutes) after the order is placed.
 8. **Capacity**: each window has a maximum number of orders. Paid orders count; unpaid orders hold a

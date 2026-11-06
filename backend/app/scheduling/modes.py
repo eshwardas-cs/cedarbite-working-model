@@ -1,9 +1,8 @@
-"""Quick vs Scheduled fulfilment, and the mixed-cart rule.
+"""Quick vs Scheduled fulfilment for a cart with mixed item types.
 
-Initial-release decision (docs/decisions.md): a cart where every item allows
-Quick is a Quick Order and needs no pickup slot. Otherwise, if every item
-allows Scheduled, the WHOLE order is Scheduled and needs a slot. If neither
-works, the student is asked to split the order. Nothing is silently guessed.
+If every item allows Quick, the order is Quick. Otherwise, the order is
+Scheduled: quick-ready items can be held with prepared items for the selected
+pickup window.
 """
 from dataclasses import dataclass
 from enum import Enum
@@ -31,6 +30,6 @@ def resolve_order_mode(items: list[ItemRules]) -> Mode:
         raise NoValidMode("an item allows neither mode")
     if all(i.quick_allowed for i in items):
         return Mode.QUICK
-    if all(i.scheduled_allowed for i in items):
+    if all(i.scheduled_allowed or i.quick_allowed for i in items):
         return Mode.SCHEDULED
-    raise NoValidMode("cart items cannot share a fulfilment mode; split the order")
+    raise NoValidMode("an item allows neither mode")

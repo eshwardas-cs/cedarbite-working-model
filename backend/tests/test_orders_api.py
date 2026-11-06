@@ -170,11 +170,11 @@ class OrdersApiTests(unittest.TestCase):
         self.assertEqual(self.place(c, h, [(self.burger, 1)], pickup_window_id=self.win).status_code, 409)
         self.assertEqual(self.place(c, h, [(self.burger, 1)]).status_code, 400)   # slot required
 
-    def test_mixed_cart_and_price_change_are_refused(self):
+    def test_mixed_cart_is_scheduled_and_price_change_is_refused(self):
         c, h = self.login("s1@example.edu.pk")
         r = self.place(c, h, [(self.chips, 1), (self.burger, 1)], pickup_window_id=self.win)
-        self.assertEqual(r.status_code, 409)
-        self.assertIn("separate orders", r.json()["detail"])
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.json()["mode"], "SCHEDULED")
         r = self.place(c, h, [(self.water, 1)], expected_total_paisa=1)
         self.assertEqual(r.status_code, 409)
         self.assertIn("Prices have changed", r.json()["detail"])

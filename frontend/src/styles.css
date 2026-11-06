@@ -443,6 +443,16 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .deal-item-picker label{border-color:#304258;color:#e7edf5}
 :root[data-theme="dark"] .deal-item-picker small{color:#bdcbd9}
 :root[data-theme="dark"] .deal-item-picker input{accent-color:#ffc928}
+.deal-price-summary{margin:14px 0 18px;padding:14px 16px;display:grid;grid-template-columns:1fr auto;gap:8px 16px;border:1px solid #e7ebef;border-radius:10px;background:#fffaf0;color:#52647a;font-size:12px}
+.deal-price-summary s{color:#8994a2}
+.deal-price-summary b{color:#102b4c;font-size:15px}
+.deal-price-summary small{grid-column:1/-1;color:#16734c;font-weight:700}
+.cart-total.deal-savings-row,.receipt-deal-savings{color:#16734c;font-weight:700}
+.receipt-deal-savings{display:flex;justify-content:space-between;margin:8px 0;font-size:10pt}
+:root[data-theme="dark"] .deal-price-summary{border-color:#3b4d62;background:#1a2b40;color:#c7d3df}
+:root[data-theme="dark"] .deal-price-summary s{color:#aab9c9}
+:root[data-theme="dark"] .deal-price-summary b{color:#fff0b4}
+:root[data-theme="dark"] .deal-price-summary small,:root[data-theme="dark"] .cart-total.deal-savings-row{color:#9de1bd}
 @media print{
   @page{size:auto;margin:5mm}
   html,body{min-width:0!important;margin:0!important;padding:0!important;background:#fff!important;color:#111!important}
