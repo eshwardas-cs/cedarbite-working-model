@@ -76,12 +76,33 @@ const sampleMenu: Category[] = [
   ] },
 ];
 const DEMO_USER_KEY = "cedarbite-demo-user";
-const DEMO_ORDERS_KEY = "cedarbite-demo-orders";
+const LEGACY_DEMO_ORDERS_KEY = "cedarbite-demo-orders";
 const CANTEEN_SESSION_KEY = "cedarbite-canteen-session";
 const CANTEEN_USERNAME_KEY = "cedarbite-canteen-username";
 const CANTEEN_ROLE_KEY = "cedarbite-canteen-role";
 const SHARED_DATA_URL = "/.netlify/functions/shared-data";
 const walletKey = (email: string) => `cedarbite-demo-wallet:${email}`;
+const demoOrdersKey = (email: string) => `cedarbite-demo-orders:${email.trim().toLowerCase()}`;
+function loadDemoOrders(email: string, studentId: string | null): Order[] {
+  const key = demoOrdersKey(email);
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      const orders = JSON.parse(saved) as Order[];
+      return Array.isArray(orders) ? orders : [];
+    }
+    // Earlier preview versions stored orders in one shared list. Carry forward
+    // only entries whose student ID matches this Cedar email's ID.
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_DEMO_ORDERS_KEY) || "[]") as Order[];
+    const ownOrders = Array.isArray(legacy) && studentId
+      ? legacy.filter((order) => String(order.student_id ?? "") === studentId)
+      : [];
+    localStorage.setItem(key, JSON.stringify(ownOrders));
+    return ownOrders;
+  } catch {
+    return [];
+  }
+}
 function cacheDemoMenu(categories: Category[]) {
   try { localStorage.setItem("cedarbite-demo-menu", JSON.stringify(categories)); }
   catch { /* The shared menu remains the source of truth if the browser cache is full. */ }
@@ -128,10 +149,7 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [demoMenuReady, setDemoMenuReady] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [orderConfirmation, setOrderConfirmation] = useState<Order | null>(() => {
-    try { const saved = JSON.parse(localStorage.getItem(DEMO_ORDERS_KEY) || "[]") as Order[]; return Array.isArray(saved) ? saved[0] ?? null : null; }
-    catch { return null; }
-  });
+  const [orderConfirmation, setOrderConfirmation] = useState<Order | null>(null);
   const [queue, setQueue] = useState<Order[]>([]);
   const [orderHistory, setOrderHistory] = useState<Order[]>([]);
   const [salesSummary, setSalesSummary] = useState<SalesSummary | null>(null);
@@ -362,7 +380,12 @@ export default function App() {
     const savedDemoUser = localStorage.getItem(DEMO_USER_KEY);
     if (savedDemoUser) { try { const result = JSON.parse(savedDemoUser) as User; if (result.role === "DEMO_CANTEEN" && !sessionStorage.getItem(CANTEEN_SESSION_KEY)) { localStorage.removeItem(DEMO_USER_KEY); setUser(null); } else { setUser(result); setCsrf(result.csrf_token); } } catch { localStorage.removeItem(DEMO_USER_KEY); setUser(null); } }
     else void request<User>("/api/auth/me").then((result) => { setUser(result); setCsrf(result.csrf_token); }).catch(() => { setUser(null); setCsrf(""); });
-    try { setOrders(JSON.parse(localStorage.getItem(DEMO_ORDERS_KEY) || "[]") as Order[]); } catch { setOrders([]); }
+    if (savedDemoUser) {
+      try {
+        const savedUser = JSON.parse(savedDemoUser) as User;
+        setOrders(savedUser.role === "DEMO_STUDENT" ? loadDemoOrders(savedUser.email, savedUser.student_id) : []);
+      } catch { setOrders([]); }
+    } else setOrders([]);
     const params = new URLSearchParams(window.location.search);
     if (params.get("signin_error")) { setToast(params.get("signin_error") ?? "Cedar sign-in failed."); window.history.replaceState({}, "", window.location.pathname); }
   }, [loadMenu, loadPickupSchedule, page, request]);
@@ -393,7 +416,7 @@ export default function App() {
 
   useEffect(() => {
     if (user?.role === "DEMO_CANTEEN") { void loadQueue(); void loadSharedAvailability(); return; }
-    if (user?.role === "DEMO_STUDENT") { try { setOrders(JSON.parse(localStorage.getItem(DEMO_ORDERS_KEY) || "[]") as Order[]); } catch { setOrders([]); } return; }
+    if (user?.role === "DEMO_STUDENT") { setOrders(loadDemoOrders(user.email, user.student_id)); return; }
     if (user?.permissions.includes("queue.view")) void loadQueue();
     if (user?.permissions.includes("orders.view_own")) void loadOrders();
     if (user?.role === "student" || user?.role === "staff_customer") void loadWallet();
@@ -458,7 +481,7 @@ export default function App() {
     if (!email.endsWith("@cedar.edu.pk")) { setToast("Use a Cedar College email ending in @cedar.edu.pk."); return; }
     const localPart = email.split("@")[0];
     const demoUser: User = { email, role, email_verified: true, student_id: /^\d+$/.test(localPart) ? localPart : null, permissions: role === "DEMO_CANTEEN" ? ["orders.view_own", "queue.view", "menu.manage", "availability.toggle"] : ["orders.view_own"], csrf_token: "demo-local" };
-    localStorage.setItem(DEMO_USER_KEY, JSON.stringify(demoUser)); setUser(demoUser); setCsrf(demoUser.csrf_token); loginDialog.current?.close(); if (role === "DEMO_STUDENT") { try { const saved = JSON.parse(localStorage.getItem(walletKey(email)) || "null"); setWalletBalance(saved?.balance ?? 0); setWalletEntries(saved?.entries ?? []); } catch { setWalletBalance(0); setWalletEntries([]); } setToast(""); } else setToast("Canteen workspace opened.");
+    localStorage.setItem(DEMO_USER_KEY, JSON.stringify(demoUser)); setUser(demoUser); setCsrf(demoUser.csrf_token); loginDialog.current?.close(); if (role === "DEMO_STUDENT") { setOrders(loadDemoOrders(email, demoUser.student_id)); try { const saved = JSON.parse(localStorage.getItem(walletKey(email)) || "null"); setWalletBalance(saved?.balance ?? 0); setWalletEntries(saved?.entries ?? []); } catch { setWalletBalance(0); setWalletEntries([]); } setToast(""); } else setToast("Canteen workspace opened.");
   }
   async function demoStaffSignIn(username: string, password: string, station = "order_manager") {
     try {
@@ -626,7 +649,7 @@ export default function App() {
       if (!confirmedOrder?.pickup_code) throw new Error("The canteen did not confirm this order. Your bucket is still here; check My Orders before trying again.");
       if (entry) saveWallet(walletBalance - cartTotal, [entry, ...walletEntries]);
       const nextOrders = [confirmedOrder, ...orders.filter((existing) => existing.id !== confirmedOrder.id)];
-      localStorage.setItem(DEMO_ORDERS_KEY, JSON.stringify(nextOrders));
+      localStorage.setItem(demoOrdersKey(user.email), JSON.stringify(nextOrders));
       setOrders(nextOrders);
       setQueue((current) => [confirmedOrder, ...current.filter((existing) => existing.id !== confirmedOrder.id)]);
       setOrderConfirmation(confirmedOrder);
