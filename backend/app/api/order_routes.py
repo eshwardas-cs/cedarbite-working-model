@@ -29,6 +29,7 @@ def _ensure_accepting(request: Request, db) -> None:
 class LineIn(BaseModel):
     item_id: int
     quantity: int
+    addon_selected: bool = False
 
 
 class QuoteIn(BaseModel):
@@ -55,7 +56,7 @@ class WindowIn(BaseModel):
 
 
 def _lines(body: QuoteIn) -> list[service.Line]:
-    return [service.Line(l.item_id, l.quantity) for l in body.lines]
+    return [service.Line(l.item_id, l.quantity, l.addon_selected) for l in body.lines]
 
 
 @router.get("/ordering/status")

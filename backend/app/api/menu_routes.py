@@ -29,6 +29,8 @@ class ItemIn(BaseModel):
     description: str = Field(default="", max_length=1000)
     image_data: str | None = Field(default=None, max_length=180_000, pattern=r"^data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}$")
     price_paisa: int = Field(ge=0, le=10_000_000)
+    addon_name: str | None = Field(default=None, max_length=80)
+    addon_price_paisa: int = Field(default=0, ge=0, le=10_000_000)
     quick_allowed: bool = False
     scheduled_allowed: bool = True
     prep_minutes: int | None = Field(default=None, ge=0, le=240)
@@ -46,6 +48,8 @@ class ItemPatch(BaseModel):
     description: str | None = Field(default=None, max_length=1000)
     image_data: str | None = Field(default=None, max_length=180_000, pattern=r"^data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}$")
     price_paisa: int | None = Field(default=None, ge=0, le=10_000_000)
+    addon_name: str | None = Field(default=None, max_length=80)
+    addon_price_paisa: int | None = Field(default=None, ge=0, le=10_000_000)
     quick_allowed: bool | None = None
     scheduled_allowed: bool | None = None
     prep_minutes: int | None = Field(default=None, ge=0, le=240)

@@ -16,7 +16,7 @@ class NotFound(MenuError):
 
 
 EDITABLE = {"category_id", "name", "description", "price_paisa", "quick_allowed",
-            "scheduled_allowed", "prep_minutes", "image_data"}
+            "scheduled_allowed", "prep_minutes", "image_data", "addon_name", "addon_price_paisa"}
 
 
 def item_dict(i: MenuItem) -> dict:
@@ -24,7 +24,8 @@ def item_dict(i: MenuItem) -> dict:
             "price_paisa": i.price_paisa, "price_display": format_pkr(i.price_paisa),
             "available": bool(i.is_active and i.is_available), "is_active": i.is_active,
             "quick_allowed": i.quick_allowed, "scheduled_allowed": i.scheduled_allowed,
-            "prep_minutes": i.prep_minutes}
+            "prep_minutes": i.prep_minutes, "addon_name": i.addon_name,
+            "addon_price_paisa": i.addon_price_paisa}
 
 
 def list_menu(db: Session, include_inactive: bool = False) -> list[dict]:
@@ -59,18 +60,21 @@ def _check_modes(quick: bool, scheduled: bool) -> None:
 
 def create_item(db: Session, actor: User, *, category_id: int, name: str, description: str = "",
                 price_paisa: int, quick_allowed: bool = False, scheduled_allowed: bool = True,
-                prep_minutes: int | None = None, image_data: str | None = None) -> MenuItem:
+                prep_minutes: int | None = None, image_data: str | None = None,
+                addon_name: str | None = None, addon_price_paisa: int = 0) -> MenuItem:
     if db.get(MenuCategory, category_id) is None:
         raise MenuError("Category not found.")
     name = name.strip()
     if not name:
         raise MenuError("Item name is required.")
-    if price_paisa < 0:
-        raise MenuError("Price cannot be negative.")
+    if price_paisa < 0 or addon_price_paisa < 0:
+        raise MenuError("Prices cannot be negative.")
     _check_modes(quick_allowed, scheduled_allowed)
     item = MenuItem(category_id=category_id, name=name, description=description.strip(),
                     image_data=image_data, price_paisa=price_paisa, quick_allowed=quick_allowed,
-                    scheduled_allowed=scheduled_allowed, prep_minutes=prep_minutes)
+                    scheduled_allowed=scheduled_allowed, prep_minutes=prep_minutes,
+                    addon_name=addon_name.strip() if addon_name and addon_name.strip() else None,
+                    addon_price_paisa=addon_price_paisa if addon_name and addon_name.strip() else 0)
     db.add(item)
     db.flush()
     audit(db, actor.id, "menu.item_created", "menu_item", item.id, f"price_paisa={price_paisa}")
@@ -97,11 +101,17 @@ def update_item(db: Session, actor: User, item_id: int, changes: dict) -> MenuIt
         raise MenuError("Category not found.")
     if changes.get("price_paisa", 0) < 0:
         raise MenuError("Price cannot be negative.")
+    if changes.get("addon_price_paisa", 0) < 0:
+        raise MenuError("Add-on price cannot be negative.")
     _check_modes(changes.get("quick_allowed", item.quick_allowed),
                  changes.get("scheduled_allowed", item.scheduled_allowed))
     old_price = item.price_paisa
     for key, value in changes.items():
         setattr(item, key, value.strip() if isinstance(value, str) else value)
+    if item.addon_name is not None and not item.addon_name.strip():
+        item.addon_name = None
+    if not item.addon_name:
+        item.addon_price_paisa = 0
     if "name" in changes and not item.name:
         db.rollback()
         raise MenuError("Item name is required.")

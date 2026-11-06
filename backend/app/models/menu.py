@@ -25,6 +25,8 @@ class MenuItem(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     image_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     price_paisa: Mapped[int] = mapped_column(Integer)  # integer paisa, never float
+    addon_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    addon_price_paisa: Mapped[int] = mapped_column(Integer, default=0)
     currency: Mapped[str] = mapped_column(String(3), default="PKR")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)      # archived items are inactive
     is_available: Mapped[bool] = mapped_column(Boolean, default=True)   # staff toggle (stock-out)

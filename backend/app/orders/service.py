@@ -44,6 +44,7 @@ class OrderError(Exception):
 class Line:
     item_id: int
     quantity: int
+    addon_selected: bool = False
 
 
 @dataclass
@@ -147,9 +148,10 @@ def price_cart(db: Session, lines: list[Line]) -> Quote:
         problems.append("Your cart is empty.")
     if len(lines) > MAX_LINES:
         problems.append(f"A single order can have at most {MAX_LINES} different items.")
+    keys = [(l.item_id, l.addon_selected) for l in lines]
+    if len(set(keys)) != len(keys):
+        problems.append("Each menu item choice can appear only once; change its quantity instead.")
     ids = [l.item_id for l in lines]
-    if len(set(ids)) != len(ids):
-        problems.append("Each item can appear only once; change its quantity instead.")
     items = {i.id: i for i in db.scalars(select(MenuItem).where(MenuItem.id.in_(ids)))} if ids else {}
     used: list[MenuItem] = []
     total_qty = 0
@@ -166,8 +168,13 @@ def price_cart(db: Session, lines: list[Line]) -> Quote:
             continue
         total_qty += l.quantity
         used.append(item)
-        line_total = item.price_paisa * l.quantity
-        q.lines.append(QuoteLine(item.id, item.name, item.price_paisa, l.quantity, line_total))
+        if l.addon_selected and not item.addon_name:
+            problems.append(f"{item.name} no longer has that add-on available.")
+            continue
+        unit_price = item.price_paisa + (item.addon_price_paisa if l.addon_selected else 0)
+        line_name = f"{item.name} + {item.addon_name}" if l.addon_selected else item.name
+        line_total = unit_price * l.quantity
+        q.lines.append(QuoteLine(item.id, line_name, unit_price, l.quantity, line_total))
         q.subtotal_paisa += line_total
     if total_qty > MAX_TOTAL_QTY:
         problems.append(f"A single order can have at most {MAX_TOTAL_QTY} items in total.")

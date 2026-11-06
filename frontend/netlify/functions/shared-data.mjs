@@ -168,6 +168,28 @@ async function readAvailabilityOverrides() {
   return Object.fromEntries(pairs.filter(([, value]) => typeof value === "boolean"));
 }
 
+function priceSharedOrderLines(catalog, lines, mode) {
+  if (!Array.isArray(catalog?.categories)) return { error: "The canteen menu is not ready. Refresh the menu and try again." };
+  const menuItems = new Map(catalog.categories.flatMap((category) => category.items ?? []).map((item) => [String(item.id), item]));
+  let total_paisa = 0;
+  const priced = [];
+  for (const line of lines) {
+    const item = menuItems.get(String(line.item_id));
+    if (!item || item.available === false) return { error: `${line.name} is no longer available. Refresh the menu and try again.` };
+    if (mode === "QUICK" && !item.quick_allowed || mode === "SCHEDULED" && !item.scheduled_allowed) return { error: `${item.name} is not available for this order type.` };
+    const addon_selected = line.addon_selected === true;
+    if (addon_selected && !item.addon_name) return { error: `The optional extra for ${item.name} is no longer available. Refresh your bucket.` };
+    const addonPrice = addon_selected ? Number(item.addon_price_paisa ?? 0) : 0;
+    if (!Number.isSafeInteger(addonPrice) || addonPrice < 0) return { error: `The optional extra price for ${item.name} is invalid.` };
+    const unit_price_paisa = Number(item.price_paisa) + addonPrice;
+    if (!Number.isSafeInteger(unit_price_paisa) || unit_price_paisa < 0) return { error: `The price for ${item.name} is invalid.` };
+    const name = `${item.name}${addon_selected ? ` + ${item.addon_name}` : ""}`;
+    total_paisa += unit_price_paisa * line.quantity;
+    priced.push({ item_id: item.id, name, quantity: line.quantity, unit_price_paisa, addon_selected });
+  }
+  return { items: priced, total_paisa, total_display: `Rs ${Math.round(total_paisa / 100).toLocaleString("en-PK")}` };
+}
+
 async function migrateLegacyQueue() {
   const marker = "meta/active-queue-v1";
   if (await readJSON(marker)) return;
@@ -290,7 +312,7 @@ export default async (request) => {
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
       if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
-      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)))) return reply({ error: "Order items are invalid." }, 400);
+      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
       const availability = await readAvailabilityOverrides();
       const unavailableItem = order.items.find((item) => availability[String(item.item_id)] === false);
       if (unavailableItem) return reply({ error: `${unavailableItem.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
@@ -299,15 +321,18 @@ export default async (request) => {
         const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
         if (!slotAvailable) return reply({ error: "That pickup slot is full or no longer available. Choose another 10-minute slot." }, 409);
       }
+      const pricedOrder = priceSharedOrderLines(await readJSON("menu/catalog"), order.items, order.mode);
+      if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
       const saved = {
         id: order.id,
         status: "SUBMITTED",
         mode: order.mode === "SCHEDULED" ? "SCHEDULED" : "QUICK",
-        total_display: typeof order.total_display === "string" ? order.total_display.slice(0, 40) : "",
+        total_paisa: pricedOrder.total_paisa,
+        total_display: pricedOrder.total_display,
         pickup_code: order.pickup_code,
         created_at: new Date().toISOString(),
         pickup_window: order.pickup_window && typeof order.pickup_window === "object" ? order.pickup_window : null,
-        items: order.items.map(({ item_id, ...item }) => ({ ...item, item_id })),
+        items: pricedOrder.items,
         waiting_minutes: 0,
         student_id: order.student_id == null ? null : String(order.student_id),
         source: "ONLINE",
@@ -334,9 +359,11 @@ export default async (request) => {
       if (customerType !== "STUDENT" && customerType !== "TEACHER") return reply({ error: "Choose whether the order is for a student or teacher." }, 400);
       if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId ?? "")) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (customerType === "TEACHER" && (!customerName || customerName.length > 100)) return reply({ error: "Enter the teacher’s name (up to 100 characters)." }, 400);
-      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)))) return reply({ error: "Order items are invalid." }, 400);
+      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
-      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_display: typeof order.total_display === "string" ? order.total_display.slice(0, 40) : "", pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: order.items.map(({ item_id, ...item }) => ({ ...item, item_id })), waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
+      const pricedOrder = priceSharedOrderLines(await readJSON("menu/catalog"), order.items, order.mode);
+      if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
+      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
       await store.setJSON(`queue/${saved.id}`, saved);
       return reply({ order: saved }, 201);
     }
@@ -406,7 +433,7 @@ export default async (request) => {
 
     if (body.action === "add-menu-item") {
       const item = body.item;
-      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data)))) return reply({ error: "Menu item details are invalid. Check the name, description, price, image, and pickup type." }, 400);
+      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data))) || (item.addon_name != null && (typeof item.addon_name !== "string" || !item.addon_name.trim() || item.addon_name.length > 80)) || (item.addon_price_paisa != null && (!Number.isSafeInteger(item.addon_price_paisa) || item.addon_price_paisa < 0 || item.addon_price_paisa > 10_000_000))) return reply({ error: "Menu item details are invalid. Check the name, description, price, optional add-on, image, and pickup type." }, 400);
       let catalog = await readJSON("menu/catalog");
       if (!Array.isArray(catalog?.categories)) {
         if (!Array.isArray(body.bootstrap_categories) || body.bootstrap_categories.length < 1 || body.bootstrap_categories.length > 30 || body.bootstrap_categories.some((category) => !Number.isSafeInteger(category.id) || typeof category.name !== "string" || !category.name.trim() || category.name.length > 80 || !Array.isArray(category.items))) return reply({ error: "The shared menu is not ready. Refresh the page and try again." }, 409);
@@ -431,6 +458,8 @@ export default async (request) => {
         scheduled_allowed: item.scheduled_allowed,
         prep_minutes: item.prep_minutes ?? null,
         image_data: item.image_data ?? null,
+        addon_name: item.addon_name?.trim() || null,
+        addon_price_paisa: item.addon_name?.trim() ? item.addon_price_paisa ?? 0 : 0,
       };
       category.items.push(addedItem);
       await store.setJSON("menu/catalog", { categories });
@@ -439,7 +468,7 @@ export default async (request) => {
 
     if (body.action === "update-menu-item") {
       const item = body.item;
-      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.id) || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data)))) return reply({ error: "Menu item details are invalid. Check the name, description, price, image, and pickup type." }, 400);
+      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.id) || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data))) || (item.addon_name != null && (typeof item.addon_name !== "string" || !item.addon_name.trim() || item.addon_name.length > 80)) || (item.addon_price_paisa != null && (!Number.isSafeInteger(item.addon_price_paisa) || item.addon_price_paisa < 0 || item.addon_price_paisa > 10_000_000))) return reply({ error: "Menu item details are invalid. Check the name, description, price, optional add-on, image, and pickup type." }, 400);
       const catalog = await readJSON("menu/catalog");
       if (!Array.isArray(catalog?.categories)) return reply({ error: "The shared menu is not ready. Refresh the page and try again." }, 409);
       const categories = catalog.categories.map((category) => ({ ...category, items: Array.isArray(category.items) ? [...category.items] : [] }));
@@ -459,6 +488,8 @@ export default async (request) => {
         scheduled_allowed: item.scheduled_allowed,
         prep_minutes: item.prep_minutes ?? null,
         image_data: item.image_data ?? null,
+        addon_name: item.addon_name?.trim() || null,
+        addon_price_paisa: item.addon_name?.trim() ? item.addon_price_paisa ?? 0 : 0,
       };
       if (source.id === target.id) source.items[itemIndex] = updatedItem;
       else {
