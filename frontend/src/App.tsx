@@ -843,18 +843,24 @@ export default function App() {
       const image_data = String(data.get("image_data") ?? "") || null;
       if (!categories.some((category) => category.id === category_id)) { setItemMessage("Choose a valid menu category."); return; }
       if (!name || !Number.isFinite(price) || price < 0 || (!quick_allowed && !scheduled_allowed)) { setItemMessage("Enter a name and valid price, then choose at least one pickup type."); return; }
-      let id = -Date.now();
-      while (items.some((item) => item.id === id)) id -= 1;
       const price_paisa = Math.round(price * 100);
       const prepValue = String(data.get("prep_minutes") ?? "").trim();
-      const newItem: Item = { id, category_id, name, description, price_paisa, price_display: money(price_paisa), available: true, quick_allowed, scheduled_allowed, prep_minutes: prepValue ? Number(prepValue) : null, image_data };
-      const next = categories.map((category) => category.id === category_id ? { ...category, items: [...category.items, newItem] } : category);
+      const newItem = { category_id, name, description, price_paisa, quick_allowed, scheduled_allowed, prep_minutes: prepValue ? Number(prepValue) : null, image_data };
+      if (menuMutationInFlightRef.current) { setItemMessage("Another menu change is still saving. Wait a moment and try again."); return; }
       itemAddInFlightRef.current = true;
+      menuMutationInFlightRef.current = true;
+      setMenuMutationPending(true);
       setItemAddPending(true);
       setItemMessage("Saving to the shared menu…");
-      try { await saveDemoMenu(next); form.reset(); setItemMessage(`${name} is now on the shared menu.`); }
+      try {
+        const result = await request<{ categories: Category[]; item: Item }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "add-menu-item", item: newItem, bootstrap_categories: categories }) });
+        setCategories(result.categories);
+        cacheDemoMenu(result.categories);
+        form.reset();
+        setItemMessage(`${result.item.name} is now on the shared menu for everyone.`);
+      }
       catch (error) { setItemMessage(error instanceof Error ? error.message : "Item was not added. Try again."); }
-      finally { itemAddInFlightRef.current = false; setItemAddPending(false); }
+      finally { itemAddInFlightRef.current = false; menuMutationInFlightRef.current = false; setMenuMutationPending(false); setItemAddPending(false); }
       return;
     }
     itemAddInFlightRef.current = true;

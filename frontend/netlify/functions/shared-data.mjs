@@ -378,6 +378,39 @@ export default async (request) => {
     if (!await managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
     if (!await isManager(request)) return reply({ error: "Sign in to the order control station to change shared data." }, 401);
 
+    if (body.action === "add-menu-item") {
+      const item = body.item;
+      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data)))) return reply({ error: "Menu item details are invalid. Check the name, description, price, image, and pickup type." }, 400);
+      let catalog = await readJSON("menu/catalog");
+      if (!Array.isArray(catalog?.categories)) {
+        if (!Array.isArray(body.bootstrap_categories) || body.bootstrap_categories.length < 1 || body.bootstrap_categories.length > 30 || body.bootstrap_categories.some((category) => !Number.isSafeInteger(category.id) || typeof category.name !== "string" || !category.name.trim() || category.name.length > 80 || !Array.isArray(category.items))) return reply({ error: "The shared menu is not ready. Refresh the page and try again." }, 409);
+        catalog = { categories: body.bootstrap_categories };
+      }
+      const categories = catalog.categories.map((category) => ({ ...category, items: Array.isArray(category.items) ? [...category.items] : [] }));
+      const category = categories.find((entry) => entry.id === item.category_id);
+      if (!category) return reply({ error: "That category is no longer in the shared menu. Refresh and choose a current category." }, 409);
+      const currentItems = categories.flatMap((entry) => entry.items);
+      if (currentItems.length >= 200) return reply({ error: "The menu has reached its 200-item limit." }, 409);
+      let itemId = randomBytes(6).readUIntBE(0, 6);
+      while (currentItems.some((entry) => entry.id === itemId)) itemId = randomBytes(6).readUIntBE(0, 6);
+      const addedItem = {
+        id: itemId,
+        category_id: category.id,
+        name: item.name.trim(),
+        description: item.description,
+        price_paisa: item.price_paisa,
+        price_display: `Rs ${Math.round(item.price_paisa / 100).toLocaleString("en-PK")}`,
+        available: true,
+        quick_allowed: item.quick_allowed,
+        scheduled_allowed: item.scheduled_allowed,
+        prep_minutes: item.prep_minutes ?? null,
+        image_data: item.image_data ?? null,
+      };
+      category.items.push(addedItem);
+      await store.setJSON("menu/catalog", { categories });
+      return reply({ categories, item: addedItem }, 201);
+    }
+
     if (body.action === "delete-sales-summary") {
       const date = String(body.date ?? "");
       const today = reportDayKey(new Date());
