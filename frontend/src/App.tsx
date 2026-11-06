@@ -268,19 +268,21 @@ export default function App() {
   const userRole = user?.role;
   const loadMenu = useCallback(async (manage = false) => {
     const revisionAtStart = menuRevisionRef.current;
-    if (userRole?.startsWith("DEMO_")) {
+    if (userRole?.startsWith("DEMO_") || !userRole) {
       try {
         const shared = await request<{ categories: Category[] | null }>(`${SHARED_DATA_URL}?scope=menu`, { cache: "no-store" });
-        if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
-          const latestCategories = shared.categories ?? [];
+        if (shared.categories !== null && revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
+          const latestCategories = shared.categories;
           setCategories(latestCategories);
-          setMenuLoadedRole(userRole);
-          cacheDemoMenu(latestCategories);
+          setMenuLoadedRole(userRole ?? "anonymous");
+          if (userRole?.startsWith("DEMO_")) cacheDemoMenu(latestCategories);
           setMenuError("");
-          void loadSharedAvailability();
+          if (userRole?.startsWith("DEMO_")) void loadSharedAvailability();
           return;
         }
-      } catch { /* Continue with the saved or built-in menu if shared storage is unavailable. */ }
+      } catch { /* Continue with a local fallback for demo accounts, or the API menu for real accounts. */ }
+    }
+    if (userRole?.startsWith("DEMO_")) {
       if (revisionAtStart !== menuRevisionRef.current || availabilityPendingRef.current.size > 0) return;
       const saved = localStorage.getItem("cedarbite-demo-menu");
       if (saved) { try { setCategories(JSON.parse(saved) as Category[]); setMenuLoadedRole(userRole); setMenuError(""); void loadSharedAvailability(); } catch { localStorage.removeItem("cedarbite-demo-menu"); } return; }
@@ -440,7 +442,7 @@ export default function App() {
     return () => { window.clearInterval(timer); window.removeEventListener("focus", refreshQueue); document.removeEventListener("visibilitychange", refreshQueue); };
   }, [loadQueue, page, user?.role]);
   useEffect(() => {
-    if (page !== "menu" && !(["owner", "order-manager", "cashdesk", "kitchen"] as Page[]).includes(page)) return;
+    if (page !== "menu" && !(["owner", "order-manager", "counter", "cashdesk", "kitchen"] as Page[]).includes(page)) return;
     const refreshAvailability = () => {
       if (user?.role === "DEMO_CANTEEN") void loadSharedAvailability();
       else if (user?.role === "DEMO_STUDENT") void loadMenu();
