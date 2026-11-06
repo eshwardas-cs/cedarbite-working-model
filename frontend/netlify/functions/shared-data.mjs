@@ -394,8 +394,8 @@ export default async (request) => {
         amount_paisa,
         kind: "credit",
         method,
-        status: "PRACTICE_ONLY",
-        label: "Student top-up (practice only; payment not received)",
+        status: "PAYMENT_NOT_RECEIVED",
+        label: "Student top-up request · payment not received",
         created_at: new Date().toISOString(),
         recorded_by: "student dashboard",
       };
