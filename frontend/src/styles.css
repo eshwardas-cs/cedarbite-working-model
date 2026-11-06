@@ -408,6 +408,25 @@ img.counter-item-visual{display:block}
 .history-delete-button:disabled{opacity:.5;cursor:wait}
 :root[data-theme="dark"] .history-delete-button{border-color:#624047;background:#35252c;color:#ffb4b8}
 :root[data-theme="dark"] .history-delete-button:hover{border-color:#c95359;background:#492a32;color:#ffdadd}
+
+/* Improve contrast for loading, empty, and editing states in dark mode. */
+:root{--panel:#fff}
+:root[data-theme="dark"]{--panel:#142337}
+:root[data-theme="dark"] .section-kicker{color:#f0cf68}
+:root[data-theme="dark"] .panel-empty{background:#1b2e43;color:#d6e0ec!important}
+:root[data-theme="dark"] .empty-state{background:#172639;color:#e7edf5}
+:root[data-theme="dark"] .empty-state h2{color:#f1f5fa}
+:root[data-theme="dark"] .empty-state p{color:#c4d1df}
+:root[data-theme="dark"] .menu-loading-message{color:#f1f5fa}
+:root[data-theme="dark"] .deal-admin-row{border-color:#304258}
+:root[data-theme="dark"] .deal-admin-row b{color:#f1f5fa}
+:root[data-theme="dark"] .menu-edit-modal{border-color:#40546b;background:#142337;color:#edf4fb}
+:root[data-theme="dark"] .menu-edit-modal .menu-edit-fields>label,:root[data-theme="dark"] .menu-edit-modal .menu-edit-image{color:#d2dce7}
+:root[data-theme="dark"] .menu-edit-modal .item-image-preview{border-color:#40546b;background:#101d2d}
+:root[data-theme="dark"] .menu-edit-modal .item-image-preview button{border-color:#52677f;background:#1c3045;color:#edf4fb}
+:root[data-theme="dark"] .menu-edit-modal .item-image-preview button:hover{border-color:#c5a834;background:#3a321b;color:#ffe08a}
+:root[data-theme="dark"] .menu-edit-modal .error-message,:root[data-theme="dark"] .error-message{color:#ffb9b2!important}
+:root[data-theme="dark"] .menu-edit-modal .form-message:not(.error-message){color:#9ce5bb}
 @media print{
   @page{size:auto;margin:5mm}
   html,body{min-width:0!important;margin:0!important;padding:0!important;background:#fff!important;color:#111!important}
