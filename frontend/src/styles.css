@@ -427,6 +427,11 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .menu-edit-modal .item-image-preview button:hover{border-color:#c5a834;background:#3a321b;color:#ffe08a}
 :root[data-theme="dark"] .menu-edit-modal .error-message,:root[data-theme="dark"] .error-message{color:#ffb9b2!important}
 :root[data-theme="dark"] .menu-edit-modal .form-message:not(.error-message){color:#9ce5bb}
+:root[data-theme="dark"] .deal-item-picker{border-color:#40546b;background:#101d2d}
+:root[data-theme="dark"] .deal-item-picker legend{color:#f1f5fa}
+:root[data-theme="dark"] .deal-item-picker label{border-color:#304258;color:#e7edf5}
+:root[data-theme="dark"] .deal-item-picker small{color:#bdcbd9}
+:root[data-theme="dark"] .deal-item-picker input{accent-color:#ffc928}
 @media print{
   @page{size:auto;margin:5mm}
   html,body{min-width:0!important;margin:0!important;padding:0!important;background:#fff!important;color:#111!important}
