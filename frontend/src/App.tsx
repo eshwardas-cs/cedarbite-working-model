@@ -625,7 +625,7 @@ export default function App() {
     } catch (error) { setWalletMessage(error instanceof Error ? error.message : "Cash top-up was not recorded."); }
     finally { setCashTopUpPending(false); }
   }
-  function addToCart(id: number, amount = 1) { setCart((current) => { const next = { ...current, [id]: Math.max(0, (current[id] ?? 0) + amount) }; if (!next[id]) delete next[id]; return next; }); }
+  function addToCart(id: number, amount = 1) { setCart((current) => { const next = { ...current, [id]: Math.min(20, Math.max(0, (current[id] ?? 0) + amount)) }; if (!next[id]) delete next[id]; return next; }); }
   function saveWallet(balance: number, entries: WalletEntry[]) { if (user?.email) localStorage.setItem(walletKey(user.email), JSON.stringify({ balance, entries })); setWalletBalance(balance); setWalletEntries(entries); }
   async function demoTopUp() {
     const amount = Math.round(Number(topUpAmount) * 100);
@@ -664,6 +664,17 @@ export default function App() {
       setToast("That pickup slot is no longer available. Choose a current slot.");
       return;
     }
+    const cartEntries = Object.entries(cart).filter(([, quantity]) => quantity > 0);
+    const orderItems = cartEntries.flatMap(([id, quantity]) => {
+      const item = items.find((candidate) => candidate.id === Number(id));
+      return item ? [{ item_id: item.id, name: item.name.replace("[DEV SAMPLE] ", ""), quantity }] : [];
+    });
+    if (!cartEntries.length || orderItems.length !== cartEntries.length || orderItems.some((item) => !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || item.name.length > 120)) {
+      const currentItemIds = new Set(items.map((item) => String(item.id)));
+      setCart((current) => Object.fromEntries(Object.entries(current).filter(([id, quantity]) => currentItemIds.has(id) && quantity > 0)));
+      setOrderError("Your bucket had an item that is no longer on the current menu. It has been removed; please review the items and try again.");
+      return;
+    }
     if (paymentMethod === "wallet" && walletBalance < cartTotal) { setToast("Your wallet balance is too low. Add practice credit to continue."); setWalletOpen(true); return; }
     orderSubmittingRef.current = true;
     setOrderSubmitting(true);
@@ -672,7 +683,7 @@ export default function App() {
     const entry = paymentMethod === "wallet" ? { id: crypto.randomUUID(), label: "Order payment (practice)", amount: cartTotal, kind: "debit" as const, created_at: new Date().toISOString(), method: "CedarBite practice wallet" } : null;
     let pickupCode = "";
     do { pickupCode = `CB${crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`; } while (orders.some((existing) => existing.pickup_code === pickupCode));
-    const order: Order = { id: crypto.randomUUID(), status: "SUBMITTED", mode: orderMode === "quick" ? "QUICK" : "SCHEDULED", student_id: user.student_id, payment_method: paymentMethod, total_display: money(cartTotal), pickup_code: pickupCode, created_at: new Date().toISOString(), pickup_window: selectedPickupWindow ? { start_at: selectedPickupWindow.start_at, end_at: selectedPickupWindow.end_at } : null, items: Object.entries(cart).flatMap(([id, quantity]) => { const item = items.find((candidate) => candidate.id === Number(id)); return item ? [{ item_id: item.id, name: item.name.replace("[DEV SAMPLE] ", ""), quantity }] : []; }), waiting_minutes: 0 };
+    const order: Order = { id: crypto.randomUUID(), status: "SUBMITTED", mode: orderMode === "quick" ? "QUICK" : "SCHEDULED", student_id: user.student_id, payment_method: paymentMethod, total_display: money(cartTotal), pickup_code: pickupCode, created_at: new Date().toISOString(), pickup_window: selectedPickupWindow ? { start_at: selectedPickupWindow.start_at, end_at: selectedPickupWindow.end_at } : null, items: orderItems, waiting_minutes: 0 };
     try {
       const result = await request<{ order?: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "create-order", order }) });
       const confirmedOrder = result.order;
