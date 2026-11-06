@@ -402,6 +402,10 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .receipt-print-button{border-color:#40546b;background:#1b2e43;color:#f1f5fa}
 :root[data-theme="dark"] .receipt-print-button:hover{border-color:#c5a834;background:#3a321b;color:#ffe08a}
 .history-actions{display:flex;align-items:center;gap:7px}
+.owner-stations-button{min-height:34px;padding:0 10px;display:inline-flex;align-items:center;gap:6px;border:1px solid #d9e2ec;border-radius:7px;background:#fff;color:#214b73;text-decoration:none;font-size:10px;font-weight:750;white-space:nowrap}
+.owner-stations-button:hover{border-color:#6b91b5;background:#f0f6fc;color:#102b4c}
+:root[data-theme="dark"] .owner-stations-button{border-color:#354c65;background:#152538;color:#dbeaff}
+:root[data-theme="dark"] .owner-stations-button:hover{border-color:#6885a4;background:#1b3048;color:#fff}
 .history-refund-button{min-height:35px;padding:0 10px;border:1px solid #c9d9ea;border-radius:7px;background:#eef6ff;color:#174b78;font-size:12px;font-weight:750;cursor:pointer;white-space:nowrap}
 .history-refund-button:hover:not(:disabled){border-color:#3b76aa;background:#dceeff;color:#103a62}
 .history-refund-button:disabled{opacity:.55;cursor:not-allowed}
