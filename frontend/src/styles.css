@@ -401,6 +401,13 @@ img.counter-item-visual{display:block}
 .receipt-print-button:hover{border-color:#d1ad24;background:#fff5cf;color:#102b4c}
 :root[data-theme="dark"] .receipt-print-button{border-color:#40546b;background:#1b2e43;color:#f1f5fa}
 :root[data-theme="dark"] .receipt-print-button:hover{border-color:#c5a834;background:#3a321b;color:#ffe08a}
+.history-actions{display:flex;align-items:center;gap:7px}
+.history-delete-button{width:35px;height:35px;flex:none;display:grid;place-items:center;border:1px solid #ead8d8;border-radius:7px;background:#fff7f7;color:#a83e43;cursor:pointer}
+.history-delete-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.history-delete-button:hover{border-color:#c95359;background:#ffe8e8;color:#8d2027}
+.history-delete-button:disabled{opacity:.5;cursor:wait}
+:root[data-theme="dark"] .history-delete-button{border-color:#624047;background:#35252c;color:#ffb4b8}
+:root[data-theme="dark"] .history-delete-button:hover{border-color:#c95359;background:#492a32;color:#ffdadd}
 @media print{
   @page{size:auto;margin:5mm}
   html,body{min-width:0!important;margin:0!important;padding:0!important;background:#fff!important;color:#111!important}
@@ -429,7 +436,7 @@ img.counter-item-visual{display:block}
   .receipt-total strong{font-size:13pt}
   .receipt-print footer{margin-top:12px;text-align:center;font-size:8pt;line-height:1.5}
 }
-@media(max-width:680px){.history-item .receipt-print-button{grid-column:2;justify-self:start}}
+@media(max-width:680px){.history-item .history-actions{grid-column:2;justify-self:start}}
 
 /* Keep every staff station readable when the shared theme is dark. */
 :root[data-theme="dark"] .stations-page{color:#e7edf5}

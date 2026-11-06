@@ -511,6 +511,17 @@ export default async (request) => {
       return reply({ deleted: true, order_id: body.order_id });
     }
 
+    if (body.action === "delete-history-order") {
+      if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
+      if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to delete an order from history." }, 401);
+      if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
+      const key = `history/${body.order_id}`;
+      const order = await readJSON(key);
+      if (!order) return reply({ error: "This order is no longer in order history." }, 404);
+      await store.delete(key);
+      return reply({ deleted: true, order_id: body.order_id });
+    }
+
     if (body.action === "set-status") {
       if (typeof body.order_id !== "string" || typeof body.status !== "string") return reply({ error: "Order status details are invalid." }, 400);
       const key = `queue/${body.order_id}`;
