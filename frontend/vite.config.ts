@@ -1,14 +1,10 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
-const runtimeProcess = globalThis as typeof globalThis & {
-  process?: { env?: Record<string, string | undefined> };
-};
-
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: runtimeProcess.process?.env?.VERCEL ? "dist" : "../backend/app/web",
+    outDir: "../backend/app/web",
     emptyOutDir: true,
   },
   server: {
