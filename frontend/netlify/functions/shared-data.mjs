@@ -241,6 +241,14 @@ export default async (request) => {
         const orders = await readByPrefix("queue/");
         return reply({ windows: listPickupWindows(orders) });
       }
+      if (url.searchParams.get("scope") === "counter-order") {
+        if (!await staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
+        if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to check this order." }, 401);
+        const id = String(url.searchParams.get("id") ?? "");
+        if (!id || id.length > 80) return reply({ error: "Order ID is invalid." }, 400);
+        const order = await readJSON(`queue/${id}`) || await readJSON(`history/${id}`);
+        return reply({ order: order ?? null });
+      }
       if (["sales-dates", "sales-summary"].includes(url.searchParams.get("scope"))) {
         if (!await staffConfigured("order_manager")) return reply({ error: "The order manager login is not configured yet." }, 503);
         if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to the order manager station to view sales summaries." }, 401);

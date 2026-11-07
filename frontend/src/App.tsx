@@ -287,17 +287,32 @@ export default function App() {
 
   async function submitCounterOrder(order: Record<string, unknown>): Promise<Order> {
     const init: RequestInit = { method: "POST", body: JSON.stringify({ action: "create-counter-order", order }) };
-    try {
-      const result = await request<{ order: Order }>(SHARED_DATA_URL, init);
-      return result.order;
-    } catch (error) {
-      if (!(error instanceof TypeError)) throw error;
-      // Reuse the same order ID: the function returns an existing order if the
-      // first response was lost after the write completed.
-      await new Promise((resolve) => window.setTimeout(resolve, 800));
-      const result = await request<{ order: Order }>(SHARED_DATA_URL, init);
-      return result.order;
+    const orderId = String(order.id ?? "");
+    let connectionError: TypeError | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const result = await request<{ order?: Order }>(SHARED_DATA_URL, init);
+        if (result.order) return result.order;
+        throw new Error("The counter service did not return the saved order.");
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        connectionError = error;
+      }
+
+      // A timed-out response can mean the server saved the order but the
+      // browser never received its confirmation. Check by id before retrying.
+      await new Promise((resolve) => window.setTimeout(resolve, 350 * (attempt + 1)));
+      try {
+        const saved = await request<{ order: Order | null }>(`${SHARED_DATA_URL}?scope=counter-order&id=${encodeURIComponent(orderId)}`, { cache: "no-store" });
+        if (saved.order) return saved.order;
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        connectionError = error;
+      }
     }
+    throw new Error(connectionError
+      ? "The counter service is not reachable right now. The same order was checked safely; please retry when the connection returns."
+      : "The counter service could not confirm the saved order.");
   }
 
   const loadPickupSchedule = useCallback(async () => {
