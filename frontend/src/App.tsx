@@ -71,8 +71,8 @@ function ReceiptPrintView({ order }: { order: Order }) {
 }
 const stationName = (station: string | null, user?: User | null) => station === "order_taker" ? "the counter station" : station === "cashier" ? "the cash desk" : station === "kitchen" ? "the kitchen monitor" : station === "order_manager" ? "the order manager station" : user?.email ? `the student account ${user.email}` : "another account";
 const sampleDeals: Deal[] = [
-  { id: "sample-1", title: "Break-time bundle", description: "Pick a drink and snack to enjoy during your break.", active: true, item_ids: [-31, -32] },
-  { id: "sample-2", title: "Lunch deal", description: "Chicken biryani with a cold drink, ready for scheduled pickup.", active: true, item_ids: [-21, -33] },
+  { id: "sample-1", title: "Break-time bundle", description: "Pick a drink and snack to enjoy during your break.", active: true, item_ids: [291361114902, 27575512689910] },
+  { id: "sample-2", title: "Lunch deal", description: "Chicken biryani with a cold drink, ready for scheduled pickup.", active: true, item_ids: [111850216743122, 27575512689910] },
 ];
 const sampleMenu: Category[] = [
   { id: -1, name: "Burgers & wraps", items: [
@@ -91,6 +91,13 @@ const sampleMenu: Category[] = [
     { id: -34, category_id: -3, name: "Fresh juice", description: "Freshly prepared juice.", price_paisa: 18000, price_display: "Rs 180", available: true, quick_allowed: true, scheduled_allowed: false, prep_minutes: null },
   ] },
 ];
+async function loadFallbackMenu(): Promise<Category[]> {
+  try {
+    const { default: menuCatalog } = await import("./catalog.json");
+    if (Array.isArray(menuCatalog.categories) && menuCatalog.categories.length) return menuCatalog.categories as Category[];
+  } catch { /* Use the small built-in list if the catalog asset cannot be loaded. */ }
+  return sampleMenu;
+}
 const DEMO_USER_KEY = "cedarbite-demo-user";
 const LEGACY_DEMO_ORDERS_KEY = "cedarbite-demo-orders";
 const CANTEEN_SESSION_KEY = "cedarbite-canteen-session";
@@ -309,7 +316,7 @@ export default function App() {
     if (userRole?.startsWith("DEMO_") || !userRole) {
       try {
         const shared = await request<{ categories: Category[] | null }>(`${SHARED_DATA_URL}?scope=menu`, { cache: "no-store" });
-        if (Array.isArray(shared.categories) && revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
+        if (Array.isArray(shared.categories) && shared.categories.length > 0 && revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
           const latestCategories = shared.categories;
           setCategories(latestCategories);
           setMenuLoadedRole(userRole ?? "anonymous");
@@ -324,10 +331,17 @@ export default function App() {
       if (revisionAtStart !== menuRevisionRef.current || availabilityPendingRef.current.size > 0) return;
       const saved = storageGet("local", "cedarbite-demo-menu");
       if (saved) { try { const parsed: unknown = JSON.parse(saved); if (!Array.isArray(parsed)) throw new Error("Saved menu is invalid."); setCategories(parsed as Category[]); setMenuLoadedRole(userRole); setMenuError(""); void loadSharedAvailability(); } catch { storageRemove("local", "cedarbite-demo-menu"); } return; }
-      if (userRole === "DEMO_CANTEEN") { setCategories(sampleMenu); setMenuLoadedRole(userRole); void loadSharedAvailability(); return; }
+      if (userRole === "DEMO_CANTEEN") { setCategories(await loadFallbackMenu()); setMenuLoadedRole(userRole); void loadSharedAvailability(); return; }
     }
-    try { const result = await request<{ categories: Category[] }>(manage ? "/api/menu/manage" : "/api/menu"); if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) { setCategories(Array.isArray(result.categories) ? result.categories : sampleMenu); setMenuLoadedRole(userRole ?? "anonymous"); setMenuError(""); } }
-    catch { if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) { setCategories(sampleMenu); setMenuLoadedRole(userRole ?? "anonymous"); setMenuError(""); } }
+    try {
+      const result = await request<{ categories: Category[] }>(manage ? "/api/menu/manage" : "/api/menu");
+      if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
+        setCategories(Array.isArray(result.categories) && result.categories.length > 0 ? result.categories : await loadFallbackMenu());
+        setMenuLoadedRole(userRole ?? "anonymous");
+        setMenuError("");
+      }
+    }
+    catch { if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) { setCategories(await loadFallbackMenu()); setMenuLoadedRole(userRole ?? "anonymous"); setMenuError(""); } }
   }, [loadSharedAvailability, request, userRole]);
   const loadQueue = useCallback(async () => {
     if (canteenStation === "order_taker") return;
