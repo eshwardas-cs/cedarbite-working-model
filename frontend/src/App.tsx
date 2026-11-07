@@ -13,6 +13,10 @@ type OrderMode = "quick" | "scheduled";
 type WalletEntry = { id: string | number; label: string; amount: number; kind: "credit" | "debit"; created_at: string; method: string };
 type WalletTopUpHistoryEntry = { id: string; student_id: string; amount_paisa: number; label: string; created_at: string; recorded_by?: string; method?: string; status?: string };
 
+// Netlify serves this frontend and shared-data functions; FastAPI's /api
+// routes are not deployed there.
+const IS_NETLIFY_HOSTED = window.location.hostname.endsWith(".netlify.app");
+
 function pageForPath(path: string): Page {
   if (path === "/stations") return "stations";
   if (path === "/counter") return "counter";
@@ -272,6 +276,10 @@ export default function App() {
       headers.set("X-Canteen-Role", canteenStation);
     }
     const response = await fetch(path, { ...init, headers, credentials: "include" });
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      throw new Error(`Expected JSON from ${path}, received ${contentType || "an unknown response"}.`);
+    }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : typeof body.error === "string" ? body.error : `Request failed (${response.status})`);
     return body as T;
@@ -293,10 +301,12 @@ export default function App() {
   }
 
   const loadPickupSchedule = useCallback(async () => {
-    try {
-      const result = await request<{ windows: PickupWindow[] }>("/api/pickup-windows", { cache: "no-store" });
-      if (Array.isArray(result.windows)) return result.windows;
-    } catch { /* Use the shared Netlify schedule when the API route is not deployed. */ }
+    if (!IS_NETLIFY_HOSTED) {
+      try {
+        const result = await request<{ windows: PickupWindow[] }>("/api/pickup-windows", { cache: "no-store" });
+        if (Array.isArray(result.windows)) return result.windows;
+      } catch { /* Use the shared Netlify schedule when the API route is not deployed. */ }
+    }
     const result = await request<{ windows: PickupWindow[] }>(`${SHARED_DATA_URL}?scope=pickup-windows`, { cache: "no-store" });
     if (!Array.isArray(result.windows)) throw new Error("Pickup schedule is unavailable.");
     return result.windows;
@@ -355,6 +365,14 @@ export default function App() {
       const saved = storageGet("local", "cedarbite-demo-menu");
       if (saved) { try { const parsed: unknown = JSON.parse(saved); if (!Array.isArray(parsed)) throw new Error("Saved menu is invalid."); setCategories(parsed as Category[]); setMenuLoadedRole(userRole); setMenuError(""); void loadSharedAvailability(); } catch { storageRemove("local", "cedarbite-demo-menu"); } return; }
       if (userRole === "DEMO_CANTEEN") { setCategories(await loadFallbackMenu()); setMenuLoadedRole(userRole); void loadSharedAvailability(); return; }
+    }
+    if (IS_NETLIFY_HOSTED) {
+      if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
+        setCategories(await loadFallbackMenu());
+        setMenuLoadedRole(userRole ?? "anonymous");
+        setMenuError("");
+      }
+      return;
     }
     try {
       const result = await request<{ categories: Category[] }>(manage ? "/api/menu/manage" : "/api/menu");
@@ -479,10 +497,13 @@ export default function App() {
       pickupWindowsFromApiRef.current = false;
       setPickupWindows(samplePickupWindows());
     });
-    void request<{ configured: boolean }>("/api/auth/google/status").then((result) => setGoogleReady(result.configured)).catch(() => setGoogleReady(false));
+    if (!IS_NETLIFY_HOSTED) {
+      void request<{ configured: boolean }>("/api/auth/google/status").then((result) => setGoogleReady(result.configured)).catch(() => setGoogleReady(false));
+    } else setGoogleReady(false);
     const savedDemoUser = storageGet("local", DEMO_USER_KEY);
     if (savedDemoUser) { try { const result = JSON.parse(savedDemoUser) as User; if (result.role === "DEMO_CANTEEN" && !storageGet("session", CANTEEN_SESSION_KEY)) { storageRemove("local", DEMO_USER_KEY); setUser(null); } else { setUser(result); setCsrf(result.csrf_token); } } catch { storageRemove("local", DEMO_USER_KEY); setUser(null); } }
-    else void request<User>("/api/auth/me").then((result) => { setUser(result); setCsrf(result.csrf_token); }).catch(() => { setUser(null); setCsrf(""); });
+    else if (!IS_NETLIFY_HOSTED) void request<User>("/api/auth/me").then((result) => { setUser(result); setCsrf(result.csrf_token); }).catch(() => { setUser(null); setCsrf(""); });
+    else { setUser(null); setCsrf(""); }
     if (savedDemoUser) {
       try {
         const savedUser = JSON.parse(savedDemoUser) as User;
