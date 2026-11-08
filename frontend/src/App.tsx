@@ -363,24 +363,24 @@ export default function App() {
     } catch { /* The static menu remains usable if shared availability is temporarily unavailable. */ }
   }, [request, user?.role]);
 
+  const userRole = user?.role;
   const loadOrderingStatus = useCallback(async () => {
     try {
-      const result = user?.role?.startsWith("DEMO_") || !user
+      const result = userRole?.startsWith("DEMO_") || !userRole
         ? await request<{ paused: boolean }>(`${SHARED_DATA_URL}?scope=ordering-status`, { cache: "no-store" })
         : await request<{ accepting_orders: boolean }>("/api/ordering/status", { cache: "no-store" });
       const paused = "paused" in result ? result.paused : !result.accepting_orders;
       setOrderingReason(paused ? "Online ordering is paused by the canteen." : "Ordering is open");
     } catch {
-      if (user?.role?.startsWith("DEMO_") || !user) {
+      if (userRole?.startsWith("DEMO_") || !userRole) {
         try {
           const result = await request<{ paused: boolean }>(`${SHARED_DATA_URL}?scope=ordering-status`, { cache: "no-store" });
           setOrderingReason(result.paused ? "Online ordering is paused by the canteen." : "Ordering is open");
         } catch { /* The order service still enforces its saved setting when an order is submitted. */ }
       }
     }
-  }, [request, user]);
+  }, [request, userRole]);
 
-  const userRole = user?.role;
   const loadMenu = useCallback(async (manage = false) => {
     const revisionAtStart = menuRevisionRef.current;
     if (userRole?.startsWith("DEMO_") || !userRole) {
