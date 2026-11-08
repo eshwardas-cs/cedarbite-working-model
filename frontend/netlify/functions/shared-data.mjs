@@ -338,10 +338,17 @@ export default async (request) => {
     }
 
     if (body.action === "create-order") {
-      const orderingSettings = await readJSON("settings/ordering");
-      if (orderingSettings?.paused === true) return reply({ error: "We are currently not accepting orders." }, 409);
       const order = body.order;
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
+      const existingOrder = await readJSON(`queue/${order.id}`) || await readJSON(`history/${order.id}`);
+      if (existingOrder) {
+        if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.student_id ?? "") !== String(order.student_id ?? "")) return reply({ error: "This order reference is already in use." }, 409);
+        const studentOrder = { ...existingOrder };
+        delete studentOrder.student_id;
+        return reply({ order: studentOrder, duplicate: true });
+      }
+      const orderingSettings = await readJSON("settings/ordering");
+      if (orderingSettings?.paused === true) return reply({ error: "We are currently not accepting orders." }, 409);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
