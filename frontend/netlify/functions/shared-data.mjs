@@ -207,6 +207,16 @@ export default async (request) => {
   try {
     const url = new URL(request.url);
     if (request.method === "GET") {
+      if (url.searchParams.get("scope") === "student-order") {
+        const id = String(url.searchParams.get("id") ?? "");
+        const pickupCode = String(url.searchParams.get("pickup_code") ?? "");
+        if (!/^[a-f0-9-]{36}$/i.test(id) || !/^CB[A-F0-9]{6}$/.test(pickupCode)) return reply({ error: "Order details are invalid." }, 400);
+        const order = await readJSON(`queue/${id}`) || await readJSON(`history/${id}`);
+        if (!order || order.pickup_code !== pickupCode) return reply({ order: null });
+        const studentOrder = { ...order };
+        delete studentOrder.student_id;
+        return reply({ order: studentOrder });
+      }
       if (url.searchParams.get("scope") === "ordering-status") {
         const settings = await readJSON("settings/ordering") || { paused: false };
         return reply({ paused: settings.paused === true });

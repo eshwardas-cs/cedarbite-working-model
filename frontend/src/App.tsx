@@ -1,5 +1,6 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { availablePickupWindows as filterPickupWindows, formatPickupTime, samplePickupWindows, type PickupWindow } from "./pickupWindows";
+import { submitOrderWithRecovery } from "./orderSubmission";
 
 type User = { email: string; role: string; email_verified: boolean; student_id: string | null; permissions: string[]; csrf_token: string };
 type Item = { id: number; category_id: number; name: string; description: string; price_paisa: number; price_display: string; available: boolean; quick_allowed: boolean; scheduled_allowed: boolean; prep_minutes: number | null; image_data?: string | null; addon_name?: string | null; addon_price_paisa?: number };
@@ -327,24 +328,13 @@ export default function App() {
   }
 
   async function submitStudentOrder(order: Order): Promise<Order> {
-    let lastConnectionError: TypeError | null = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const result = await request<{ order?: Order }>(SHARED_DATA_URL, {
-          method: "POST",
-          body: JSON.stringify({ action: "create-order", order }),
-        });
-        if (result.order?.pickup_code) return result.order;
-        throw new Error("The canteen did not confirm this order. Your bucket is still here.");
-      } catch (error) {
-        if (!(error instanceof TypeError)) throw error;
-        lastConnectionError = error;
-        if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 400 * (attempt + 1)));
-      }
-    }
-    throw new Error(lastConnectionError
-      ? "The canteen connection could not be reached after three attempts. Your bucket is unchanged; check My Orders before retrying."
-      : "The canteen could not confirm this order. Your bucket is unchanged.");
+    return submitOrderWithRecovery(order, async (sameOrder) => request<{ order?: Order }>(SHARED_DATA_URL, {
+      method: "POST",
+      body: JSON.stringify({ action: "create-order", order: sameOrder }),
+    }), async (sameOrder) => request<{ order: Order | null }>(
+      `${SHARED_DATA_URL}?scope=student-order&id=${encodeURIComponent(String(sameOrder.id))}&pickup_code=${encodeURIComponent(sameOrder.pickup_code)}`,
+      { cache: "no-store" },
+    ), (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)));
   }
 
   const loadPickupSchedule = useCallback(async () => {
