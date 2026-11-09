@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.7",
+    "@supabase/supabase-js": "^2.119.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
