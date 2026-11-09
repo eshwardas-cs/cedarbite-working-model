@@ -200,8 +200,9 @@ export default function App() {
     if (["counter", "cashdesk", "order-manager", "kitchen"].includes(routePage)) return stationForPage(routePage);
     return storageGet("session", CANTEEN_ROLE_KEY) || "order_manager";
   });
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [menuLoadedRole, setMenuLoadedRole] = useState<string | null>(null);
+  const [categories, setCategoriesState] = useState<Category[]>([]);
+  const [menuLoadedRole, setMenuLoadedRoleState] = useState<string | null>(null);
+  const setCategories = setCategoriesState;
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderConfirmation, setOrderConfirmation] = useState<Order | null>(null);
   const [queue, setQueue] = useState<Order[]>([]);
@@ -227,6 +228,7 @@ export default function App() {
   const availabilityPendingRef = useRef(new Set<number>());
   const availabilityVersionRef = useRef(new Map<number, number>());
   const menuRevisionRef = useRef(0);
+  const menuLoadRequestRef = useRef(0);
   const orderSubmittingRef = useRef(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [showOrderConfirmation, setShowOrderConfirmation] = useState(false);
@@ -387,6 +389,13 @@ export default function App() {
 
   const loadMenu = useCallback(async (manage = false) => {
     const revisionAtStart = menuRevisionRef.current;
+    // Only the newest menu load may update the screen. A page first loads the menu as a
+    // logged-out visitor, then again once the saved staff login is read; if the older visitor
+    // load finished last it used to overwrite the staff one and leave the screen on "loading".
+    const requestId = ++menuLoadRequestRef.current;
+    const isLatest = () => requestId === menuLoadRequestRef.current;
+    const setCategories = (next: Category[]) => { if (isLatest()) setCategoriesState(next); };
+    const setMenuLoadedRole = (role: string) => { if (isLatest()) setMenuLoadedRoleState(role); };
     // The menu comes from Supabase first (when configured). The old sources below are the backup.
     try {
       const supabaseMenu = await fetchMenuFromSupabase();
