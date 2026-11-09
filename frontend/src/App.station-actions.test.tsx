@@ -3,11 +3,10 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 
-const jsonResponse = (body: unknown, status = 200) => ({
-  ok: status >= 200 && status < 300,
-  status,
-  json: async () => body,
-}) as Response;
+// A real JSON Response, so the app's content-type check (added in 0ceae63) and the
+// Supabase client both see what a real server would send.
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 const staffUser = (permissions: string[]) => ({
   email: "station@canteen.local",

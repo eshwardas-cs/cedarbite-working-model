@@ -18,8 +18,9 @@ type WalletEntry = { id: string | number; label: string; amount: number; kind: "
 type WalletTopUpHistoryEntry = { id: string; student_id: string; amount_paisa: number; label: string; created_at: string; recorded_by?: string; method?: string; status?: string };
 
 // Netlify serves this frontend and shared-data functions; FastAPI's /api
-// routes are not deployed there.
-const IS_NETLIFY_HOSTED = window.location.hostname.endsWith(".netlify.app");
+// routes are not deployed there. Anything that is not this computer counts as
+// hosted, including the custom domain (cedarbite.me), not only *.netlify.app.
+const IS_NETLIFY_HOSTED = !["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
 
 function pageForPath(path: string): Page {
   if (path === "/stations") return "stations";
@@ -199,8 +200,9 @@ export default function App() {
     if (["counter", "cashdesk", "order-manager", "kitchen"].includes(routePage)) return stationForPage(routePage);
     return storageGet("session", CANTEEN_ROLE_KEY) || "order_manager";
   });
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [menuLoadedRole, setMenuLoadedRole] = useState<string | null>(null);
+  const [categories, setCategoriesState] = useState<Category[]>([]);
+  const [menuLoadedRole, setMenuLoadedRoleState] = useState<string | null>(null);
+  const setCategories = setCategoriesState;
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderConfirmation, setOrderConfirmation] = useState<Order | null>(null);
   const [queue, setQueue] = useState<Order[]>([]);
@@ -226,6 +228,7 @@ export default function App() {
   const availabilityPendingRef = useRef(new Set<number>());
   const availabilityVersionRef = useRef(new Map<number, number>());
   const menuRevisionRef = useRef(0);
+  const menuLoadRequestRef = useRef(0);
   const orderSubmittingRef = useRef(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [showOrderConfirmation, setShowOrderConfirmation] = useState(false);
@@ -386,6 +389,13 @@ export default function App() {
 
   const loadMenu = useCallback(async (manage = false) => {
     const revisionAtStart = menuRevisionRef.current;
+    // Only the newest menu load may update the screen. A page first loads the menu as a
+    // logged-out visitor, then again once the saved staff login is read; if the older visitor
+    // load finished last it used to overwrite the staff one and leave the screen on "loading".
+    const requestId = ++menuLoadRequestRef.current;
+    const isLatest = () => requestId === menuLoadRequestRef.current;
+    const setCategories = (next: Category[]) => { if (isLatest()) setCategoriesState(next); };
+    const setMenuLoadedRole = (role: string) => { if (isLatest()) setMenuLoadedRoleState(role); };
     // The menu comes from Supabase first (when configured). The old sources below are the backup.
     try {
       const supabaseMenu = await fetchMenuFromSupabase();
@@ -982,8 +992,7 @@ export default function App() {
     if (!Number.isFinite(price) || price < 0) { setToast("Enter a valid price."); return; }
     if (user?.role === "DEMO_CANTEEN") {
       const price_paisa = Math.round(price * 100);
-      const next = categories.map((category) => ({ ...category, items: category.items.map((entry) => entry.id === item.id ? { ...entry, price_paisa, price_display: money(price_paisa) } : entry) }));
-      try { await saveDemoMenu(next); setToast(`Price updated for ${item.name}.`); }
+      try { await saveMenuChange({ action: "set-price", item_id: item.id, price_paisa }); setToast(`Price updated for ${item.name}.`); }
       catch (error) { setToast(error instanceof Error ? error.message : "Price was not changed."); }
       return;
     }
@@ -1012,9 +1021,8 @@ export default function App() {
   async function removeMenuItem(item: Item): Promise<boolean> {
     if (menuMutationInFlightRef.current) return false;
     if (user?.role === "DEMO_CANTEEN") {
-      const next = categories.map((category) => ({ ...category, items: category.items.filter((entry) => entry.id !== item.id) }));
       try {
-        await saveDemoMenu(next);
+        await saveMenuChange({ action: "remove-menu-item", item_id: item.id });
         setToast(`${item.name} was removed from the shared menu. Existing orders stay in history.`);
         return true;
       } catch (error) {
@@ -1038,12 +1046,15 @@ export default function App() {
     }
   }
 
-  async function saveDemoMenu(nextCategories: Category[]) {
+  // Staff menu changes go through the shared-data function, which checks the station
+  // password and saves to Supabase. Each change is small and specific (one price, one item,
+  // one category) so a screen showing an older menu cannot undo someone else's change.
+  async function saveMenuChange(change: Record<string, unknown>) {
     if (menuMutationInFlightRef.current) throw new Error("A menu change is already saving. Wait for it to finish, then try again.");
     menuMutationInFlightRef.current = true;
     setMenuMutationPending(true);
     try {
-      const result = await request<{ categories: Category[] }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "set-menu", categories: nextCategories }) });
+      const result = await request<{ categories: Category[] }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify(change) });
       setCategories(result.categories);
       cacheDemoMenu(result.categories);
       return result.categories;
@@ -1052,6 +1063,8 @@ export default function App() {
       setMenuMutationPending(false);
     }
   }
+  // Reordering only: the server saves the new order of categories and items.
+  const saveDemoMenu = (nextCategories: Category[]) => saveMenuChange({ action: "set-menu", categories: nextCategories });
   async function reorderMenuItems(sourceId: number, targetId: number) {
     if (user?.role !== "DEMO_CANTEEN" || sourceId === targetId || menuMutationInFlightRef.current) return;
     const source = items.find((item) => item.id === sourceId);
@@ -1083,8 +1096,7 @@ export default function App() {
   async function addCategory(form: HTMLFormElement) {
     const name = String(new FormData(form).get("category") ?? "").trim(); if (!name) return;
     if (user?.role === "DEMO_CANTEEN") {
-      const next = [...categories, { id: Math.max(0, ...categories.map((category) => category.id)) + 1, name, items: [] }];
-      try { await saveDemoMenu(next); form.reset(); setToast(`Category ${name} added.`); }
+      try { await saveMenuChange({ action: "add-category", name }); form.reset(); setToast(`Category ${name} added.`); }
       catch (error) { setToast(error instanceof Error ? error.message : "Category was not added."); }
       return;
     }
@@ -1105,9 +1117,7 @@ export default function App() {
       return false;
     }
     try {
-      const movedItems = current.items.map((item) => target ? { ...item, category_id: target.id } : item);
-      const next = categories.filter((entry) => entry.id !== current.id).map((entry) => entry.id === target?.id ? { ...entry, items: [...entry.items, ...movedItems] } : entry);
-      await saveDemoMenu(next);
+      await saveMenuChange({ action: "remove-category", category_id: current.id, target_category_id: target?.id ?? null });
       if (categoryFilter === current.name) setCategoryFilter(target?.name ?? "All");
       setToast(target ? `${current.name} removed; its items moved to ${target.name}.` : `${current.name} category removed.`);
       return true;

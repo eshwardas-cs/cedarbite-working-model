@@ -2,14 +2,17 @@
 
 The public storefront submits pickup orders to the Netlify Function in
 `frontend/netlify/functions/shared-data.mjs`. The function stores each order
-and menu-availability change in the site-wide `cedarbite-shared-pilot` Netlify
-Blobs store. The canteen dashboard refreshes the queue every two seconds and
+in the site-wide `cedarbite-shared-pilot` Netlify Blobs store. The canteen dashboard refreshes the queue every two seconds and
 only loads active orders, so completed orders do not slow later refreshes.
 Pending orders saved by the previous queue format are migrated the first time
 the updated dashboard reads the queue. A collected order is removed from the
 active queue.
 
-The same store keeps the menu catalogue and menu-availability overrides.
+The **menu** (items, prices, photos, sold-out switches, categories and their
+order) is no longer kept here: it lives in **Supabase** (see
+`docs/supabase-setup.md`). The function reads it from Supabase to price every
+order and saves staff menu changes there through `frontend/shared/menu-store.mjs`.
+Deals are still kept in this store and are checked against the Supabase menu.
 An open student menu refreshes shared menu changes every five seconds; deal
 presentation settings remain local to each browser.
 

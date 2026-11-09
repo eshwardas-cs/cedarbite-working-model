@@ -31,6 +31,9 @@ export async function fetchMenuFromSupabase() {
       "id, name, sort_order, menu_items(id, category_id, name, description, price_paisa, addon_name, addon_price_paisa, is_available, quick_allowed, scheduled_allowed, prep_minutes, image_path)",
     )
     .order("sort_order")
+    .order("id")
+    // Items in the order staff set (sort_order, added by 0003_menu_editing.sql); id breaks ties.
+    .order("sort_order", { referencedTable: "menu_items" })
     .order("id", { referencedTable: "menu_items" });
 
   if (error) throw new Error(`Supabase menu error: ${error.message}`);

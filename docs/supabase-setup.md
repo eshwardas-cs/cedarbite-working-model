@@ -43,6 +43,8 @@ Create a project in the team account. In **Project Settings → API Keys**, note
 In **SQL Editor**, run these files in order (each one is safe to run again):
 1. `supabase/migrations/0001_menu.sql`: menu tables, read-only security rules and the `menu-images` photo bucket.
 2. `supabase/migrations/0002_auth_cedar_only.sql`: the Cedar-only sign-in rule, profiles and the staff list.
+3. `supabase/migrations/0003_menu_editing.sql`: item order (`sort_order`) and two server-only functions
+   for reordering the menu and removing a category. Run it **before** deploying the menu-editing code.
 
 ### 3. Menu data (one-time import)
 This copies `frontend/src/catalog.json` (14 categories, 51 items and their photos) into Supabase:
@@ -58,7 +60,7 @@ Create a **Web application** client:
 - **Authorized redirect URI:** `https://<project-ref>.supabase.co/auth/v1/callback`
 
 **Audience:** while the app is in **Testing**, only the listed test users can sign in. Before students use
-it, complete **Branding** (home page, privacy policy page `/privacy`, authorized domain) and click
+it, complete **Branding** (home page, privacy policy page `/privacy-policy`, authorized domain) and click
 **Publish app**. Only the `openid`, `email` and `profile` scopes are used.
 
 ### 5. Supabase Auth settings
@@ -73,8 +75,26 @@ In **Site configuration → Environment variables**, add `VITE_SUPABASE_URL` and
 `VITE_SUPABASE_PUBLISHABLE_KEY`, then **trigger a new deploy**. Vite builds these values into the site,
 so they only take effect after a deploy.
 
-The publishable key is meant to be public. Security comes from the database rules. Never put the
-secret key in Netlify, in `VITE_*` variables, or in frontend code.
+The publishable key is meant to be public. Security comes from the database rules.
+
+**Staff menu editing** also needs the **secret** key, used only by the Netlify function
+(`frontend/netlify/functions/shared-data.mjs` → `frontend/shared/menu-store.mjs`):
+- Add `SUPABASE_SECRET_KEY` (the `sb_secret_...` key) with **Contains secret values** ticked.
+  Fill in **Production** and **Deploy Previews** only; leave **Local development** empty (Netlify does
+  not treat that one as secret). On the free plan the scopes can't be narrowed (Builds, Functions and
+  Runtime stay ticked); that is fine because the build only bundles `VITE_*` variables, and Netlify's
+  secret scanning stops a deploy if the key ever appears in the built files. Redeploy afterwards.
+- Never name it `VITE_*` and never import `shared/menu-store.mjs` from `src/`: anything `VITE_*` or under
+  `src/` is shipped to every visitor's browser.
+- The function checks the order-manager station password first, then saves the change to Supabase.
+
+### 6b. How the menu flows (after `0003`)
+- **Students** read the menu straight from Supabase (`src/menuApi.ts`, publishable key, read-only).
+- **Staff** change it through the station screens. The browser sends one small change (sold out, one
+  price, one item, one category, or the new order) to the Netlify function, which saves it to Supabase.
+- **Orders** are priced by the Netlify function from the Supabase menu, never from the browser's price.
+- Netlify storage no longer holds any menu data. Deals are still stored there for now, checked against
+  the Supabase menu.
 
 ### 7. Staff accounts (optional)
 Add the person's email and role (`staff` / `manager` / `owner`) to **Table Editor → staff_allowlist**

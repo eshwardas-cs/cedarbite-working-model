@@ -1,6 +1,6 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
-import liveMenuSeed from "../../shared/menu-seed.json" with { type: "json" };
+import * as menuStore from "../../shared/menu-store.mjs";
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
@@ -10,7 +10,6 @@ const store = getStore({
 });
 
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
-const MENU_SEED_VERSION = 1;
 const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
 const transitions = { SUBMITTED: "PREPARING", ACCEPTED: "READY", PREPARING: "READY", READY: "COLLECTED" };
 const reportDayKey = (value) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
@@ -161,15 +160,6 @@ async function readByPrefix(prefix) {
   return records.filter(Boolean);
 }
 
-async function readAvailabilityOverrides() {
-  const { blobs } = await listBlobs("availability/");
-  const pairs = await Promise.all(blobs.map(async ({ key }) => [
-    key.slice("availability/".length),
-    await readJSON(key),
-  ]));
-  return Object.fromEntries(pairs.filter(([, value]) => typeof value === "boolean"));
-}
-
 function priceSharedOrderLines(catalog, lines, mode) {
   if (!Array.isArray(catalog?.categories)) return { error: "The canteen menu is not ready. Refresh the menu and try again." };
   const menuItems = new Map(catalog.categories.flatMap((category) => category.items ?? []).map((item) => [String(item.id), item]));
@@ -233,19 +223,11 @@ export default async (request) => {
         return reply({ entries });
       }
       if (url.searchParams.get("scope") === "availability") {
-        return reply({ availability: await readAvailabilityOverrides() });
+        const catalog = await menuStore.readCatalog();
+        return reply({ availability: Object.fromEntries(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item.available])) });
       }
       if (url.searchParams.get("scope") === "menu") {
-        let menu = await readJSON("menu/catalog");
-        const savedSeedVersion = Number(await readJSON("meta/menu-seed-version") ?? 0);
-        if (!Array.isArray(menu?.categories) || savedSeedVersion < MENU_SEED_VERSION) {
-          menu = { categories: liveMenuSeed.categories };
-          await store.setJSON("menu/catalog", menu);
-          await store.setJSON("meta/menu-seed-version", MENU_SEED_VERSION);
-        }
-        const availability = await readAvailabilityOverrides();
-        const categories = menu.categories.map((category) => ({ ...category, items: category.items.map((item) => ({ ...item, available: availability[String(item.id)] ?? item.available })) }));
-        return reply({ categories });
+        return reply({ categories: (await menuStore.readCatalog()).categories });
       }
       if (url.searchParams.get("scope") === "pickup-windows") {
         const orders = await readByPrefix("queue/");
@@ -364,15 +346,15 @@ export default async (request) => {
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
       if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
-      const availability = await readAvailabilityOverrides();
-      const unavailableItem = order.items.find((item) => availability[String(item.item_id)] === false);
+      const catalog = await menuStore.readCatalog();
+      const menuItemsById = new Map(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item]));
+      const unavailableItem = order.items.find((item) => menuItemsById.get(String(item.item_id))?.available === false);
       if (unavailableItem) return reply({ error: `${unavailableItem.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
       if (order.mode === "SCHEDULED") {
         const activeOrders = await readByPrefix("queue/");
         const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
         if (!slotAvailable) return reply({ error: "That pickup slot is full or no longer available. Choose another 10-minute slot." }, 409);
       }
-      const catalog = await readJSON("menu/catalog");
       const dealIds = order.deal_ids ?? [];
       if (!Array.isArray(dealIds) || dealIds.length > 20 || dealIds.some((id) => typeof id !== "string" || id.length > 80)) return reply({ error: "Deal details are invalid." }, 400);
       const savedDeals = await readJSON("menu/deals") || [];
@@ -439,7 +421,7 @@ export default async (request) => {
       if (customerType === "TEACHER" && (!customerName || customerName.length > 100)) return reply({ error: "Enter the teacher’s name (up to 100 characters)." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
-      const pricedOrder = priceSharedOrderLines(await readJSON("menu/catalog"), order.items, order.mode);
+      const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, order.mode);
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
       const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
       await store.setJSON(`queue/${saved.id}`, saved);
@@ -517,13 +499,7 @@ export default async (request) => {
 
     if (body.action === "set-deals") {
       if (!Array.isArray(body.deals) || body.deals.length > 50) return reply({ error: "Deal list is invalid." }, 400);
-      let catalog = await readJSON("menu/catalog");
-      if (!Array.isArray(catalog?.categories)) {
-        const bootstrap = body.bootstrap_categories;
-        if (!Array.isArray(bootstrap) || bootstrap.length < 1 || bootstrap.length > 30 || bootstrap.some((category) => !Number.isSafeInteger(category.id) || typeof category.name !== "string" || !category.name.trim() || category.name.length > 80 || !Array.isArray(category.items))) return reply({ error: "The shared menu is not ready. Refresh it and try again." }, 409);
-        catalog = { categories: bootstrap };
-        await store.setJSON("menu/catalog", catalog);
-      }
+      const catalog = await menuStore.readCatalog();
       const catalogItems = new Map(catalog.categories.flatMap((category) => category.items ?? []).map((item) => [item.id, item]));
       const ids = new Set();
       for (const deal of body.deals) {
@@ -544,70 +520,15 @@ export default async (request) => {
     if (body.action === "add-menu-item") {
       const item = body.item;
       if (!item || typeof item !== "object" || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data))) || (item.addon_name != null && (typeof item.addon_name !== "string" || !item.addon_name.trim() || item.addon_name.length > 80)) || (item.addon_price_paisa != null && (!Number.isSafeInteger(item.addon_price_paisa) || item.addon_price_paisa < 0 || item.addon_price_paisa > 10_000_000))) return reply({ error: "Menu item details are invalid. Check the name, description, price, optional add-on, image, and pickup type." }, 400);
-      let catalog = await readJSON("menu/catalog");
-      if (!Array.isArray(catalog?.categories)) {
-        if (!Array.isArray(body.bootstrap_categories) || body.bootstrap_categories.length < 1 || body.bootstrap_categories.length > 30 || body.bootstrap_categories.some((category) => !Number.isSafeInteger(category.id) || typeof category.name !== "string" || !category.name.trim() || category.name.length > 80 || !Array.isArray(category.items))) return reply({ error: "The shared menu is not ready. Refresh the page and try again." }, 409);
-        catalog = { categories: body.bootstrap_categories };
-      }
-      const categories = catalog.categories.map((category) => ({ ...category, items: Array.isArray(category.items) ? [...category.items] : [] }));
-      const category = categories.find((entry) => entry.id === item.category_id);
-      if (!category) return reply({ error: "That category is no longer in the shared menu. Refresh and choose a current category." }, 409);
-      const currentItems = categories.flatMap((entry) => entry.items);
-      if (currentItems.length >= 200) return reply({ error: "The menu has reached its 200-item limit." }, 409);
-      let itemId = randomBytes(6).readUIntBE(0, 6);
-      while (currentItems.some((entry) => entry.id === itemId)) itemId = randomBytes(6).readUIntBE(0, 6);
-      const addedItem = {
-        id: itemId,
-        category_id: category.id,
-        name: item.name.trim(),
-        description: item.description,
-        price_paisa: item.price_paisa,
-        price_display: `Rs ${Math.round(item.price_paisa / 100).toLocaleString("en-PK")}`,
-        available: true,
-        quick_allowed: item.quick_allowed,
-        scheduled_allowed: item.scheduled_allowed,
-        prep_minutes: item.prep_minutes ?? null,
-        image_data: item.image_data ?? null,
-        addon_name: item.addon_name?.trim() || null,
-        addon_price_paisa: item.addon_name?.trim() ? item.addon_price_paisa ?? 0 : 0,
-      };
-      category.items.push(addedItem);
-      await store.setJSON("menu/catalog", { categories });
-      return reply({ categories, item: addedItem }, 201);
+      const addedItem = await menuStore.addItem(item);
+      return reply({ categories: (await menuStore.readCatalog()).categories, item: addedItem }, 201);
     }
 
     if (body.action === "update-menu-item") {
       const item = body.item;
-      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.id) || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data))) || (item.addon_name != null && (typeof item.addon_name !== "string" || !item.addon_name.trim() || item.addon_name.length > 80)) || (item.addon_price_paisa != null && (!Number.isSafeInteger(item.addon_price_paisa) || item.addon_price_paisa < 0 || item.addon_price_paisa > 10_000_000))) return reply({ error: "Menu item details are invalid. Check the name, description, price, optional add-on, image, and pickup type." }, 400);
-      const catalog = await readJSON("menu/catalog");
-      if (!Array.isArray(catalog?.categories)) return reply({ error: "The shared menu is not ready. Refresh the page and try again." }, 409);
-      const categories = catalog.categories.map((category) => ({ ...category, items: Array.isArray(category.items) ? [...category.items] : [] }));
-      const source = categories.find((category) => category.items.some((entry) => entry.id === item.id));
-      const target = categories.find((category) => category.id === item.category_id);
-      if (!source || !target) return reply({ error: "This item or category is no longer on the shared menu. Refresh and try again." }, 409);
-      const itemIndex = source.items.findIndex((entry) => entry.id === item.id);
-      const current = source.items[itemIndex];
-      const updatedItem = {
-        ...current,
-        category_id: target.id,
-        name: item.name.trim(),
-        description: item.description.trim(),
-        price_paisa: item.price_paisa,
-        price_display: `Rs ${Math.round(item.price_paisa / 100).toLocaleString("en-PK")}`,
-        quick_allowed: item.quick_allowed,
-        scheduled_allowed: item.scheduled_allowed,
-        prep_minutes: item.prep_minutes ?? null,
-        image_data: item.image_data ?? null,
-        addon_name: item.addon_name?.trim() || null,
-        addon_price_paisa: item.addon_name?.trim() ? item.addon_price_paisa ?? 0 : 0,
-      };
-      if (source.id === target.id) source.items[itemIndex] = updatedItem;
-      else {
-        source.items.splice(itemIndex, 1);
-        target.items.push(updatedItem);
-      }
-      await store.setJSON("menu/catalog", { categories });
-      return reply({ categories, item: updatedItem });
+      if (!item || typeof item !== "object" || !Number.isSafeInteger(item.id) || !Number.isSafeInteger(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || item.price_paisa > 10_000_000 || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !(/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data) || /^https:\/\/[^\s]{1,500}$/.test(item.image_data)))) || (item.addon_name != null && (typeof item.addon_name !== "string" || !item.addon_name.trim() || item.addon_name.length > 80)) || (item.addon_price_paisa != null && (!Number.isSafeInteger(item.addon_price_paisa) || item.addon_price_paisa < 0 || item.addon_price_paisa > 10_000_000))) return reply({ error: "Menu item details are invalid. Check the name, description, price, optional add-on, image, and pickup type." }, 400);
+      const updatedItem = await menuStore.updateItem(item);
+      return reply({ categories: (await menuStore.readCatalog()).categories, item: updatedItem });
     }
 
     if (body.action === "delete-sales-summary") {
@@ -620,24 +541,45 @@ export default async (request) => {
     }
 
     if (body.action === "set-menu") {
+      // Only the ORDER of categories and items is saved here. Prices, removals and
+      // categories have their own actions below, so one stale screen cannot undo another's change.
       const categories = body.categories;
-      if (!Array.isArray(categories) || categories.length < 1 || categories.length > 30 || categories.some((category) => !Number.isSafeInteger(category.id) || typeof category.name !== "string" || !category.name.trim() || category.name.length > 80 || !Array.isArray(category.items))) return reply({ error: "Menu categories are invalid." }, 400);
-      const categoryIds = new Set(categories.map((category) => category.id));
-      const items = categories.flatMap((category) => category.items);
-      const itemIds = new Set();
-      if (items.length > 200 || items.some((item) => {
-        if (!Number.isSafeInteger(item.id) || itemIds.has(item.id) || !categoryIds.has(item.category_id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 || typeof item.description !== "string" || item.description.length > 500 || !Number.isSafeInteger(item.price_paisa) || item.price_paisa < 0 || typeof item.available !== "boolean" || typeof item.quick_allowed !== "boolean" || typeof item.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || (item.prep_minutes != null && (!Number.isInteger(item.prep_minutes) || item.prep_minutes < 0 || item.prep_minutes > 240)) || (item.image_data != null && (typeof item.image_data !== "string" || item.image_data.length > 180_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data)))) return true;
-        itemIds.add(item.id);
-        return false;
-      })) return reply({ error: "Menu items are invalid." }, 400);
-      await store.setJSON("menu/catalog", { categories });
-      return reply({ categories });
+      if (!Array.isArray(categories) || categories.length < 1 || categories.length > 30 || categories.some((category) => !Number.isSafeInteger(category?.id) || !Array.isArray(category.items) || category.items.length > 200 || category.items.some((item) => !Number.isSafeInteger(item?.id)))) return reply({ error: "Menu categories are invalid." }, 400);
+      const itemIds = categories.flatMap((category) => category.items.map((item) => item.id));
+      if (new Set(itemIds).size !== itemIds.length || new Set(categories.map((category) => category.id)).size !== categories.length) return reply({ error: "Menu categories are invalid." }, 400);
+      await menuStore.reorderMenu(categories);
+      return reply({ categories: (await menuStore.readCatalog()).categories });
     }
 
     if (body.action === "set-availability") {
       if (!Number.isSafeInteger(body.item_id) || typeof body.available !== "boolean") return reply({ error: "Availability details are invalid." }, 400);
-      await store.setJSON(`availability/${body.item_id}`, body.available);
-      return reply({ item_id: body.item_id, available: body.available });
+      const item = await menuStore.setAvailability(body.item_id, body.available);
+      return reply({ item_id: item.id, available: item.available });
+    }
+
+    if (body.action === "set-price") {
+      if (!Number.isSafeInteger(body.item_id) || !Number.isSafeInteger(body.price_paisa) || body.price_paisa < 0 || body.price_paisa > 10_000_000) return reply({ error: "Enter a valid price." }, 400);
+      await menuStore.setPrice(body.item_id, body.price_paisa);
+      return reply({ categories: (await menuStore.readCatalog()).categories });
+    }
+
+    if (body.action === "remove-menu-item") {
+      if (!Number.isSafeInteger(body.item_id)) return reply({ error: "Menu item details are invalid." }, 400);
+      await menuStore.removeItem(body.item_id);
+      return reply({ categories: (await menuStore.readCatalog()).categories });
+    }
+
+    if (body.action === "add-category") {
+      if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 80) return reply({ error: "Enter a category name (up to 80 characters)." }, 400);
+      if ((await menuStore.readCatalog()).categories.length >= 30) return reply({ error: "The menu has reached its 30-category limit." }, 409);
+      await menuStore.addCategory(body.name);
+      return reply({ categories: (await menuStore.readCatalog()).categories }, 201);
+    }
+
+    if (body.action === "remove-category") {
+      if (!Number.isSafeInteger(body.category_id) || (body.target_category_id != null && !Number.isSafeInteger(body.target_category_id))) return reply({ error: "Category details are invalid." }, 400);
+      await menuStore.removeCategory(body.category_id, body.target_category_id ?? null);
+      return reply({ categories: (await menuStore.readCatalog()).categories });
     }
 
     if (body.action === "delete-order") {
@@ -718,6 +660,7 @@ export default async (request) => {
 
     return reply({ error: "Unknown action." }, 400);
   } catch (error) {
+    if (error instanceof menuStore.MenuStoreError) return reply({ error: error.message }, error.status);
     console.error("CedarBite shared data request failed", { operation, error });
     const message = operation === "add-menu-item"
       ? "The menu item could not be saved. Refresh the menu and try again."
