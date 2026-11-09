@@ -79,8 +79,11 @@ The publishable key is meant to be public. Security comes from the database rule
 
 **Staff menu editing** also needs the **secret** key, used only by the Netlify function
 (`frontend/netlify/functions/shared-data.mjs` → `frontend/shared/menu-store.mjs`):
-- Add `SUPABASE_SECRET_KEY` (the `sb_secret_...` key) with **Scopes: Functions only** and
-  **Contains secret values** ticked, then redeploy.
+- Add `SUPABASE_SECRET_KEY` (the `sb_secret_...` key) with **Contains secret values** ticked.
+  Fill in **Production** and **Deploy Previews** only; leave **Local development** empty (Netlify does
+  not treat that one as secret). On the free plan the scopes can't be narrowed (Builds, Functions and
+  Runtime stay ticked); that is fine because the build only bundles `VITE_*` variables, and Netlify's
+  secret scanning stops a deploy if the key ever appears in the built files. Redeploy afterwards.
 - Never name it `VITE_*` and never import `shared/menu-store.mjs` from `src/`: anything `VITE_*` or under
   `src/` is shipped to every visitor's browser.
 - The function checks the order-manager station password first, then saves the change to Supabase.
