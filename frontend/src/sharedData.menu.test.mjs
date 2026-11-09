@@ -1,0 +1,125 @@
+// Staff menu changes and order prices go through Supabase (via shared/menu-store.mjs),
+// never Netlify storage, and only a signed-in order manager can change the menu.
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mockStore = vi.hoisted(() => {
+  const values = new Map();
+  return {
+    values,
+    get: vi.fn(async (key) => values.get(key) ?? null),
+    setJSON: vi.fn(async (key, value) => { values.set(key, value); }),
+    delete: vi.fn(async (key) => { values.delete(key); }),
+    list: vi.fn(async ({ prefix }) => ({ blobs: [...values.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })) })),
+  };
+});
+vi.mock("@netlify/blobs", () => ({ getStore: () => mockStore }));
+
+const menu = vi.hoisted(() => {
+  class MenuStoreError extends Error { constructor(message, status = 500) { super(message); this.status = status; } }
+  const catalog = {
+    categories: [{ id: 1, name: "Snacks", items: [
+      { id: 1, category_id: 1, name: "Samosa", price_paisa: 15000, available: true, quick_allowed: true, scheduled_allowed: true, addon_name: null, addon_price_paisa: 0 },
+      { id: 2, category_id: 1, name: "Wonton", price_paisa: 20000, available: false, quick_allowed: true, scheduled_allowed: true, addon_name: null, addon_price_paisa: 0 },
+    ] }],
+  };
+  return {
+    MenuStoreError,
+    catalog,
+    readCatalog: vi.fn(async () => catalog),
+    setAvailability: vi.fn(async (id, available) => ({ id, available })),
+    setPrice: vi.fn(async () => undefined),
+    removeItem: vi.fn(async () => undefined),
+    addItem: vi.fn(async (item) => ({ id: 99, ...item })),
+    updateItem: vi.fn(async (item) => item),
+    addCategory: vi.fn(async () => undefined),
+    removeCategory: vi.fn(async () => undefined),
+    reorderMenu: vi.fn(async () => undefined),
+  };
+});
+vi.mock("../shared/menu-store.mjs", () => menu);
+
+import sharedData from "../netlify/functions/shared-data.mjs";
+
+const ENDPOINT = "https://cedarbite.test/.netlify/functions/shared-data";
+const MANAGER = { "x-canteen-role": "order_manager", "x-canteen-username": "manager", "x-canteen-password": "manager-test-password" };
+const post = (body, headers = {}) => sharedData(new Request(ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) }));
+const get = (scope) => sharedData(new Request(`${ENDPOINT}?scope=${scope}`));
+const studentOrder = (items) => ({ action: "create-order", order: { id: "2f8e0942-21a1-49db-8134-26b6fc73e008", pickup_code: "CB12AB34", mode: "QUICK", payment_method: "cash", items } });
+
+const savedPassword = process.env.CANTEEN_DASHBOARD_PASSWORD;
+afterAll(() => { process.env.CANTEEN_DASHBOARD_PASSWORD = savedPassword; });
+
+beforeEach(() => {
+  process.env.CANTEEN_DASHBOARD_PASSWORD = "manager-test-password";
+  mockStore.values.clear();
+  mockStore.setJSON.mockClear();
+  for (const fn of ["readCatalog", "setAvailability", "setPrice", "removeItem", "addItem", "updateItem", "addCategory", "removeCategory", "reorderMenu"]) menu[fn].mockClear();
+});
+
+describe("staff menu changes", () => {
+  it("refuses menu changes without the order manager login", async () => {
+    const response = await post({ action: "set-availability", item_id: 1, available: false });
+    expect(response.status).toBe(401);
+    expect(menu.setAvailability).not.toHaveBeenCalled();
+  });
+
+  it("saves a sold-out switch to Supabase, not Netlify storage", async () => {
+    const response = await post({ action: "set-availability", item_id: 1, available: false }, MANAGER);
+    expect(response.status).toBe(200);
+    expect(menu.setAvailability).toHaveBeenCalledWith(1, false);
+    expect([...mockStore.values.keys()].some((key) => key.startsWith("availability/") || key.startsWith("menu/"))).toBe(false);
+  });
+
+  it("changes one price only", async () => {
+    const response = await post({ action: "set-price", item_id: 1, price_paisa: 17500 }, MANAGER);
+    expect(response.status).toBe(200);
+    expect(menu.setPrice).toHaveBeenCalledWith(1, 17500);
+    expect(await post({ action: "set-price", item_id: 1, price_paisa: -5 }, MANAGER).then((r) => r.status)).toBe(400);
+  });
+
+  it("removes one item, adds and removes categories, and saves the order", async () => {
+    expect((await post({ action: "remove-menu-item", item_id: 2 }, MANAGER)).status).toBe(200);
+    expect(menu.removeItem).toHaveBeenCalledWith(2);
+    expect((await post({ action: "add-category", name: "  Hot drinks " }, MANAGER)).status).toBe(201);
+    expect(menu.addCategory).toHaveBeenCalledWith("  Hot drinks ");
+    expect((await post({ action: "remove-category", category_id: 3, target_category_id: 1 }, MANAGER)).status).toBe(200);
+    expect(menu.removeCategory).toHaveBeenCalledWith(3, 1);
+    expect((await post({ action: "set-menu", categories: [{ id: 1, items: [{ id: 2 }, { id: 1 }] }] }, MANAGER)).status).toBe(200);
+    expect(menu.reorderMenu).toHaveBeenCalledOnce();
+  });
+
+  it("accepts an unchanged photo link when editing an item", async () => {
+    const item = { id: 1, category_id: 1, name: "Samosa", description: "", price_paisa: 15000, quick_allowed: true, scheduled_allowed: true, prep_minutes: null, image_data: "https://example.supabase.co/storage/v1/object/public/menu-images/items/samosa.jpg", addon_name: null, addon_price_paisa: 0 };
+    const response = await post({ action: "update-menu-item", item }, MANAGER);
+    expect(response.status).toBe(200);
+    expect(menu.updateItem).toHaveBeenCalledWith(item);
+  });
+
+  it("passes database messages (like a stale menu) back to the screen", async () => {
+    menu.reorderMenu.mockRejectedValueOnce(new menu.MenuStoreError("The menu was changed on another screen. Refresh the menu and try again.", 409));
+    const response = await post({ action: "set-menu", categories: [{ id: 1, items: [{ id: 1 }] }] }, MANAGER);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "The menu was changed on another screen. Refresh the menu and try again." });
+  });
+});
+
+describe("menu reads and order prices come from Supabase", () => {
+  it("serves the Supabase menu and sold-out list", async () => {
+    await expect((await get("menu")).json()).resolves.toEqual({ categories: menu.catalog.categories });
+    await expect((await get("availability")).json()).resolves.toEqual({ availability: { 1: true, 2: false } });
+  });
+
+  it("prices an order with Supabase item numbers and ignores the browser's price", async () => {
+    const response = await post(studentOrder([{ item_id: 1, name: "Samosa", quantity: 2, unit_price_paisa: 1 }]));
+    expect(response.status).toBe(201);
+    const { order } = await response.json();
+    expect(order.total_paisa).toBe(30000);
+    expect(order.items[0]).toMatchObject({ item_id: 1, unit_price_paisa: 15000 });
+  });
+
+  it("refuses an order for a sold-out item", async () => {
+    const response = await post(studentOrder([{ item_id: 2, name: "Wonton", quantity: 1 }]));
+    expect(response.status).toBe(409);
+    expect(mockStore.setJSON).not.toHaveBeenCalled();
+  });
+});
