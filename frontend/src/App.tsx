@@ -1,8 +1,11 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { availablePickupWindows as filterPickupWindows, formatPickupTime, samplePickupWindows, type PickupWindow } from "./pickupWindows";
 import { submitOrderWithRecovery } from "./orderSubmission";
+import { fetchMenuFromSupabase } from "./menuApi";
+import { signInWithGoogle, signOutOfSupabase, takeSignInErrorFromUrl, userFromSession } from "./authApi";
+import { supabase, supabaseConfigured } from "./supabaseClient";
 
-type User = { email: string; role: string; email_verified: boolean; student_id: string | null; permissions: string[]; csrf_token: string };
+type User = { email: string; role: string; email_verified: boolean; student_id: string | null; permissions: string[]; csrf_token: string; source?: "supabase"; full_name?: string | null };
 type Item = { id: number; category_id: number; name: string; description: string; price_paisa: number; price_display: string; available: boolean; quick_allowed: boolean; scheduled_allowed: boolean; prep_minutes: number | null; image_data?: string | null; addon_name?: string | null; addon_price_paisa?: number };
 type Category = { id: number; name: string; items: Item[] };
 type MenuItemEditValues = Pick<Item, "category_id" | "name" | "description" | "price_paisa" | "quick_allowed" | "scheduled_allowed" | "prep_minutes" | "image_data" | "addon_name" | "addon_price_paisa">;
@@ -383,6 +386,19 @@ export default function App() {
 
   const loadMenu = useCallback(async (manage = false) => {
     const revisionAtStart = menuRevisionRef.current;
+    // The menu comes from Supabase first (when configured). The old sources below are the backup.
+    try {
+      const supabaseMenu = await fetchMenuFromSupabase();
+      if (revisionAtStart === menuRevisionRef.current && availabilityPendingRef.current.size === 0) {
+        setCategories(supabaseMenu);
+        setMenuLoadedRole(userRole ?? "anonymous");
+        setMenuError("");
+        console.info(`Menu loaded from Supabase (${supabaseMenu.length} categories).`);
+      }
+      return;
+    } catch (error) {
+      console.warn("Could not load the menu from Supabase; falling back to the old menu sources.", error);
+    }
     if (userRole?.startsWith("DEMO_") || !userRole) {
       try {
         const shared = await request<{ categories: Category[] | null }>(`${SHARED_DATA_URL}?scope=menu`, { cache: "no-store" });
@@ -534,13 +550,19 @@ export default function App() {
       pickupWindowsFromApiRef.current = false;
       setPickupWindows(samplePickupWindows());
     });
-    if (!IS_NETLIFY_HOSTED) {
+    if (supabaseConfigured) {
+      // Google sign-in goes through Supabase, so it is always available.
+      setGoogleReady(true);
+      const signInError = takeSignInErrorFromUrl();
+      if (signInError) setToast(signInError);
+    } else if (!IS_NETLIFY_HOSTED) {
       void request<{ configured: boolean }>("/api/auth/google/status").then((result) => setGoogleReady(result.configured)).catch(() => setGoogleReady(false));
     } else setGoogleReady(false);
     const savedDemoUser = storageGet("local", DEMO_USER_KEY);
     if (savedDemoUser) { try { const result = JSON.parse(savedDemoUser) as User; if (result.role === "DEMO_CANTEEN" && !storageGet("session", CANTEEN_SESSION_KEY)) { storageRemove("local", DEMO_USER_KEY); setUser(null); } else { setUser(result); setCsrf(result.csrf_token); } } catch { storageRemove("local", DEMO_USER_KEY); setUser(null); } }
-    else if (!IS_NETLIFY_HOSTED) void request<User>("/api/auth/me").then((result) => { setUser(result); setCsrf(result.csrf_token); }).catch(() => { setUser(null); setCsrf(""); });
-    else { setUser(null); setCsrf(""); }
+    // With Supabase on, the Supabase listener below fills in the signed-in person (if any).
+    else if (!supabaseConfigured && !IS_NETLIFY_HOSTED) void request<User>("/api/auth/me").then((result) => { setUser(result); setCsrf(result.csrf_token); }).catch(() => { setUser(null); setCsrf(""); });
+    else if (!supabaseConfigured) { setUser(null); setCsrf(""); }
     if (savedDemoUser) {
       try {
         const savedUser = JSON.parse(savedDemoUser) as User;
@@ -576,6 +598,8 @@ export default function App() {
   }, [availablePickupWindows, selectedWindow]);
 
   useEffect(() => {
+    // Supabase users: only the menu is on Supabase so far (orders and wallet come in later steps).
+    if (user?.source === "supabase") { void loadMenu(); return; }
     if (user?.role === "DEMO_CANTEEN") { void loadMenu(true); void loadQueue(); void loadSharedAvailability(); return; }
     if (user?.role === "DEMO_STUDENT") { setOrders(loadDemoOrders(user.email, user.student_id)); void loadMenu(); void loadWallet(); return; }
     if (user?.permissions.includes("queue.view")) void loadQueue();
@@ -649,7 +673,27 @@ export default function App() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
-  function startSignIn() { if (!googleReady) { setToast("Cedar Google sign-in has not been configured for this preview yet."); return; } window.location.assign(`/api/auth/google/start?next=${encodeURIComponent(page === "owner" ? "/owner" : "/")}`); }
+  // Supabase: keep the signed-in person in sync (page load, sign-in, sign-out, token refresh).
+  useEffect(() => {
+    if (!supabaseConfigured) return;
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (storageGet("local", DEMO_USER_KEY)) return; // a demo account is in use; leave it alone
+      if (event !== "INITIAL_SESSION" && event !== "SIGNED_IN" && event !== "SIGNED_OUT") return;
+      // Run outside the listener (Supabase advises not to call it from inside its own callback).
+      window.setTimeout(() => {
+        void userFromSession(session).then((signedIn) => {
+          setUser(signedIn);
+          setCsrf("");
+          if (signedIn) loginDialog.current?.close();
+        });
+      }, 0);
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+  function startSignIn() {
+    if (!supabaseConfigured) { if (!googleReady) { setToast("Cedar Google sign-in has not been configured for this preview yet."); return; } window.location.assign(`/api/auth/google/start?next=${encodeURIComponent(page === "owner" ? "/owner" : "/")}`); return; }
+    void signInWithGoogle(page === "owner" ? "/owner" : "/").catch((error) => setToast(error instanceof Error ? error.message : "Google sign-in could not start."));
+  }
   function demoSignIn(emailValue: string, role: "DEMO_STUDENT" | "DEMO_CANTEEN" = "DEMO_STUDENT") {
     const email = emailValue.trim().toLowerCase();
     if (!email.endsWith("@cedar.edu.pk")) { setToast("Use a Cedar College email ending in @cedar.edu.pk."); return; }
@@ -706,6 +750,11 @@ export default function App() {
     }
   }
   async function signOut() {
+    if (user?.source === "supabase") {
+      try { await signOutOfSupabase(); setUser(null); setCsrf(""); setToast("You are signed out."); }
+      catch (error) { setToast(error instanceof Error ? error.message : "Sign out failed."); }
+      return;
+    }
     const demoUser = user?.role.startsWith("DEMO_") ?? false;
     const hasStationSession = Boolean(storageGet("session", CANTEEN_SESSION_KEY) || storageGet("session", CANTEEN_ROLE_KEY));
     if (demoUser) storageRemove("local", DEMO_USER_KEY);
@@ -1322,7 +1371,7 @@ export default function App() {
   <button type="button" className="mobile-menu-toggle" aria-controls="store-navigation" aria-expanded={mobileMenuOpen} onClick={() => setMobileMenuOpen((open) => !open)}><span aria-hidden="true">{mobileMenuOpen ? "×" : "☰"}</span>{mobileMenuOpen ? "Close" : "Menu"}</button>
   <div className={`header-menu ${mobileMenuOpen ? "is-open" : ""}`} id="store-navigation">
     <nav className="store-nav" aria-label="Main navigation"><span className="mobile-nav-heading">Explore CedarBite</span><button className={page === "menu" && !dealsActive ? "selected" : ""} onClick={() => navigate("menu")}>Menu</button><button className={page === "menu" && dealsActive ? "selected" : ""} onClick={() => { if (page !== "menu") navigate("menu"); setDealsActive(true); setMobileMenuOpen(false); setTimeout(() => document.getElementById("deals")?.scrollIntoView({ behavior: "smooth" }), 0); }}>Deals</button><button className={page === "about" ? "selected" : ""} onClick={() => navigate("about")}>About us</button><button className={page === "contact" ? "selected" : ""} onClick={() => navigate("contact")}>Contact</button>{canSeeOrders && <button className={page === "orders" ? "selected" : ""} onClick={() => navigate("orders")}>My orders</button>}</nav>
-    <div className="header-actions"><button className="wallet-header" onClick={() => { setMobileMenuOpen(false); user?.role === "DEMO_STUDENT" ? setWalletOpen(true) : loginDialog.current?.showModal(); }}><span>Wallet</span><b>{user?.role === "DEMO_STUDENT" ? money(walletBalance) : "Sign in"}</b></button><button className="basket-header" aria-label={`Open bucket, ${cartCount} items`} onClick={() => { setMobileMenuOpen(false); setCartOpen(true); }}><span className="basket-symbol">▣</span><span>Bucket</span><b>{cartCount}</b></button>{canManage && <button className="owner-entry" onClick={() => navigate("owner")}>Canteen console <span>↗</span></button>}{user ? <button className="sign-button" onClick={() => { setMobileMenuOpen(false); void signOut(); }}>{user.student_id ? `ID ${user.student_id}` : human(user.role)} · Sign out</button> : <button className="sign-button" onClick={() => { setMobileMenuOpen(false); loginDialog.current?.showModal(); }}>Login <span>↗</span></button>}<ThemeSwitch darkMode={darkMode} onToggle={() => setDarkMode((dark) => !dark)} className="mobile-menu-theme-toggle"/></div>
+    <div className="header-actions"><button className="wallet-header" onClick={() => { setMobileMenuOpen(false); if (user?.role === "DEMO_STUDENT") setWalletOpen(true); else if (user) setToast("The wallet isn't connected yet. It moves to Supabase in a later step."); else loginDialog.current?.showModal(); }}><span>Wallet</span><b>{user?.role === "DEMO_STUDENT" ? money(walletBalance) : user ? "Soon" : "—"}</b></button><button className="basket-header" aria-label={`Open bucket, ${cartCount} items`} onClick={() => { setMobileMenuOpen(false); setCartOpen(true); }}><span className="basket-symbol">▣</span><span>Bucket</span><b>{cartCount}</b></button>{canManage && <button className="owner-entry" onClick={() => navigate("owner")}>Canteen console <span>↗</span></button>}{user ? <button className="sign-button" onClick={() => { setMobileMenuOpen(false); void signOut(); }}>{user.student_id ? `ID ${user.student_id}` : human(user.role)} · Sign out</button> : <button className="sign-button" onClick={() => { setMobileMenuOpen(false); loginDialog.current?.showModal(); }}>Login <span>↗</span></button>}<ThemeSwitch darkMode={darkMode} onToggle={() => setDarkMode((dark) => !dark)} className="mobile-menu-theme-toggle"/></div>
   </div>
 </header>
     {page === "orders" ? <main className="orders-page"><div className="page-kicker">YOUR CEDARBITE ACCOUNT</div><h1>My orders</h1><p className="page-lead">Orders appear here with their pickup code and progress.</p>{orders.length ? <div className="order-list">{orders.map((order) => <OrderCard key={order.id} order={order} />)}</div> : <div className="empty-state"><span>◷</span><h2>No orders yet</h2><p>Choose an item from the menu to see it appear here.</p><button className="blue-button" onClick={() => navigate("menu")}>Browse menu</button></div>}</main> : page === "team" ? <TeamPage/> : page === "about" || page === "privacy" || page === "contact" ? <InfoPage page={page}/> : <main>
