@@ -1398,9 +1398,9 @@ function GoogleIcon() { return <svg viewBox="0 0 48 48" aria-hidden="true"><path
 function TeamPage() {
   const members = [
     { name: "Eshwar Das", initials: "ED", role: "LEAD DEVELOPER", description: "Lead Developer for CedarBite, working with the team on the campus ordering experience." },
+    { name: "Mudassir Munawar Mannan", initials: "MM", role: "FRONTEND DEVELOPER", description: "Helping shape the student and canteen interfaces as CedarBite develops." },
     { name: "Muhammad Eyad Imran", initials: "ME", role: "BACKEND DEVELOPER", description: "Collaborating on the data and shared order experience for CedarBite." },
-    { name: "Mudassir", initials: "M", role: "FRONTEND DEVELOPER", description: "Helping shape the student and canteen interfaces as CedarBite develops." },
-    { name: "Rayan", initials: "R", role: "PRODUCT & TESTING", description: "Exploring the student and staff experience and helping review the ordering flow." },
+    { name: "Rayan Ahmed", initials: "RA", role: "PRODUCT & TESTING", description: "Exploring the student and staff experience and helping review the ordering flow." },
   ];
   return <main className="team-page">
     <section className="team-hero"><span className="section-kicker">TEAM BEHIND CEDARBITE</span><h1>Four students.<br/><span>One shared idea.</span></h1><p>We are the student team building CedarBite for the Cedar College community.</p><div className="team-hero-orbit" aria-hidden="true"><span><CedarMark/></span><i/><b/></div></section>
