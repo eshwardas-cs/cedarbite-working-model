@@ -267,32 +267,10 @@ function priceSharedOrderLines(catalog, lines, mode) {
   return { items: priced, total_paisa, total_display: `Rs ${Math.round(total_paisa / 100).toLocaleString("en-PK")}` };
 }
 
-async function migrateLegacyQueue() {
-  const marker = "meta/active-queue-v1";
-  if (await readJSON(marker)) return;
-  const legacyOrders = await readByPrefix("orders/");
-  await Promise.all(legacyOrders
-    .filter((order) => order.status !== "COLLECTED")
-    .map((order) => store.setJSON(`queue/${order.id}`, order)));
-  await store.setJSON(marker, true);
-}
-
-// Orders live in Supabase (shared/order-store.mjs). The first request after the move copies the orders
-// that were saved in Netlify storage across, once; the Netlify copies are left in place as a backup.
-let ordersInSupabase = false;
-async function ensureOrdersInSupabase() {
-  if (ordersInSupabase) return;
-  const marker = "meta/orders-in-supabase-v1";
-  if (!await readJSON(marker)) {
-    await migrateLegacyQueue();
-    const [queue, history] = await Promise.all([readByPrefix("queue/"), readByPrefix("history/")]);
-    const copied = await orderStore.importOrders([...history, ...queue]);
-    await store.setJSON(marker, { moved_at: new Date().toISOString(), orders: copied });
-  }
-  ordersInSupabase = true;
-}
-const orderDb = Object.fromEntries(["getOrder", "listActive", "listHistory", "listAll", "listForCustomer", "insertOrder", "updateOrder", "deleteOrder"]
-  .map((name) => [name, async (...args) => { await ensureOrdersInSupabase(); return orderStore[name](...args); }]));
+// Orders live in Supabase (shared/order-store.mjs). The one-time copy from Netlify storage was done when this
+// went live (2026-11-10; there were no real orders to move), so it has been removed: a copy step that runs on
+// the first request would also run on deploy previews, which share the live storage.
+const orderDb = orderStore;
 
 export default async (request) => {
   let operation = request.method === "GET" ? "load shared canteen data" : "save shared canteen data";
