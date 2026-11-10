@@ -30,7 +30,7 @@ function orderTotalPaisa(order) {
 }
 function dailySalesSummary(date, orders) {
   const unique = [...new Map(orders.filter((order) => order?.id != null).map((order) => [String(order.id), order])).values()];
-  const placed = unique.filter((order) => orderDay(order.created_at) === date);
+  const placed = unique.filter((order) => order.status !== "CANCELLED" && orderDay(order.created_at) === date);
   const paid = unique.filter((order) => order.payment_status === "PAID" && orderDay(order.cash_received_at || order.paid_at || order.created_at) === date);
   const itemCounts = new Map();
   const methods = new Map();
@@ -439,6 +439,25 @@ export default async (request) => {
       return reply({ order: forStudent(saved) }, 201);
     }
 
+    if (body.action === "cancel-order") {
+      // A signed-in student or teacher cancels their OWN order, only while the canteen hasn't accepted it.
+      const customer = await customerAuth.customerFromRequest(request);
+      if (typeof body.order_id !== "string" || !body.order_id || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || order.customer_user_id !== customer.user_id) return reply({ error: "Order not found." }, 404);
+      if (order.status === "CANCELLED") return reply({ order: forStudent(order), duplicate: true });
+      const tooLate = "The canteen has already accepted this order, so it can no longer be cancelled. Please speak to the counter.";
+      if (order.status !== "SUBMITTED") return reply({ error: tooLate }, 409);
+      if (order.payment_status === "PAID") return reply({ error: "This order has already been paid at the cash desk. Please speak to the counter to cancel it." }, 409);
+      const cancelled = { ...order, status: "CANCELLED", cancelled_at: new Date().toISOString(), cancelled_by: "customer" };
+      // Only saves if the order is STILL "submitted": if the kitchen accepted it a moment ago, the kitchen wins.
+      const saved = await orderDb.updateOrder(cancelled, { expectedStatus: "SUBMITTED" });
+      if (saved) return reply({ order: forStudent(saved) });
+      const current = await orderDb.getOrder(order.id);
+      if (current?.status === "CANCELLED") return reply({ order: forStudent(current), duplicate: true });
+      return reply({ error: tooLate }, 409);
+    }
+
     if (body.action === "create-counter-order") {
       if (!await staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
       if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to place an in-person order." }, 401);
@@ -516,6 +535,7 @@ export default async (request) => {
       const orderId = String(body.order_id ?? "");
       const order = orderId && orderId.length <= 80 ? await orderDb.getOrder(orderId) : null;
       if (!order || order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
+      if (order.status === "CANCELLED") return reply({ error: "This order was cancelled by the customer." }, 409);
       if (order.payment_method !== "cash") return reply({ error: "This order is not marked for cash payment." }, 409);
       if (order.payment_status === "PAID") return reply({ order, duplicate: true });
       const updated = { ...order, payment_status: "PAID", cash_received_at: new Date().toISOString(), cash_received_by: request.headers.get("x-canteen-username") || "cashier" };
@@ -621,7 +641,7 @@ export default async (request) => {
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to delete a new order." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
       const order = await orderDb.getOrder(body.order_id);
-      if (!order || order.status === "COLLECTED") return reply({ error: "Order is no longer in the active queue." }, 404);
+      if (!order || order.status === "COLLECTED" || order.status === "CANCELLED") return reply({ error: "Order is no longer in the active queue." }, 404);
       if (order.status !== "SUBMITTED") return reply({ error: "Only new, unaccepted orders can be deleted." }, 409);
       await orderDb.deleteOrder(body.order_id);
       return reply({ deleted: true, order_id: body.order_id });
@@ -632,7 +652,7 @@ export default async (request) => {
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to delete an order from history." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
       const order = await orderDb.getOrder(body.order_id);
-      if (!order || order.status !== "COLLECTED") return reply({ error: "This order is no longer in order history." }, 404);
+      if (!order || (order.status !== "COLLECTED" && order.status !== "CANCELLED")) return reply({ error: "This order is no longer in order history." }, 404);
       await orderDb.deleteOrder(body.order_id);
       return reply({ deleted: true, order_id: body.order_id });
     }
@@ -673,6 +693,7 @@ export default async (request) => {
       if (!order) return reply({ error: "Order not found." }, 404);
       if (order.status === body.status) return reply({ order, duplicate: true });
       if (order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
+      if (order.status === "CANCELLED") return reply({ error: "This order was cancelled by the customer." }, 409);
       if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
       const updated = body.status === "COLLECTED"
         ? { ...order, status: body.status, completed_at: new Date().toISOString() }

@@ -49,6 +49,8 @@ In **SQL Editor**, run these files in order (each one is safe to run again):
    Run it **before** deploying the code that keeps orders in Supabase. On the first request after that
    deploy, the function copies the orders saved in Netlify storage into this table once (marker
    `meta/orders-in-supabase-v1`); the Netlify copies stay as a backup.
+5. `supabase/migrations/0005_order_cancel.sql`: cancelled orders leave the kitchen queue (`is_active` now
+   means "not collected and not cancelled"). Run it **before** deploying "Cancel order".
 
 ### 3. Menu data (one-time import)
 This copies `frontend/src/catalog.json` (14 categories, 51 items and their photos) into Supabase:
@@ -107,6 +109,10 @@ The publishable key is meant to be public. Security comes from the database rule
 - **My orders:** the `?scope=my-orders` request needs the same sign-in token and returns only that person's
   orders (refreshed every 10 seconds on the My orders page). Online orders placed before PR #4 have no
   owner, so they don't appear on anyone's list.
+- **Cancel order:** on My orders, a signed-in customer can cancel their own order only while it is
+  `SUBMITTED` and unpaid (`cancel-order` action). The save only happens if the order is still `SUBMITTED`,
+  so if the kitchen accepts it at the same moment, the kitchen wins. Cancelled orders leave the queue, move
+  to history, can't be moved on or marked paid by staff, and don't count as "orders placed" in sales.
 - **Wallet payment is switched off** until the wallet moves to Supabase: nothing can check a balance yet, so
   the server refuses `wallet` orders instead of marking them paid, and checkout no longer offers it.
 - Netlify storage no longer holds menu or order data. Deals are still stored there for now, checked against

@@ -253,3 +253,57 @@ describe("orders are kept in Supabase", () => {
     expect(orderDb.rows.has(id)).toBe(false);
   });
 });
+
+describe("students can cancel only before the canteen accepts", () => {
+  const id = "66666666-6666-4666-8666-666666666666";
+  const place = () => post({ action: "create-order", order: { id, pickup_code: "CB666666", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
+  const cancel = (orderId = id) => post({ action: "cancel-order", order_id: orderId });
+  const stationList = (scope) => sharedData(new Request(`${ENDPOINT}?scope=${scope}`, { headers: MANAGER }));
+
+  it("cancels a submitted order, removes it from the kitchen queue and keeps it in My orders", async () => {
+    await place();
+    const response = await cancel();
+    expect(response.status).toBe(200);
+    expect((await response.json()).order).toMatchObject({ status: "CANCELLED" });
+    expect((await (await stationList("queue")).json()).orders).toEqual([]);
+    expect((await (await stationList("history")).json()).orders.map((o) => o.status)).toEqual(["CANCELLED"]);
+    const mine = await (await sharedData(new Request(`${ENDPOINT}?scope=my-orders`, { headers: { Authorization: "Bearer t" } }))).json();
+    expect(mine.orders.map((o) => o.status)).toEqual(["CANCELLED"]);
+    expect((await cancel()).status).toBe(200); // pressing again is harmless
+  });
+
+  it("refuses once the canteen has accepted it", async () => {
+    await place();
+    await post({ action: "set-status", order_id: id, status: "PREPARING" }, MANAGER);
+    expect((await cancel()).status).toBe(409);
+    expect(orderDb.rows.get(id).status).toBe("PREPARING");
+  });
+
+  it("lets the kitchen win if it accepts at the same moment", async () => {
+    await place();
+    orderDb.updateOrder.mockImplementationOnce(async () => {
+      orderDb.rows.set(id, { ...orderDb.rows.get(id), status: "PREPARING" });
+      return null;
+    });
+    expect((await cancel()).status).toBe(409);
+    expect(orderDb.rows.get(id).status).toBe("PREPARING");
+  });
+
+  it("refuses someone else's order, an order paid at the cash desk, and a missing sign-in", async () => {
+    await place();
+    customer.customerFromRequest.mockResolvedValueOnce({ ...customer.student, user_id: "6b1f3c1e-0000-4000-8000-000000000009" });
+    expect((await cancel()).status).toBe(404);
+    orderDb.rows.set(id, { ...orderDb.rows.get(id), payment_status: "PAID" });
+    expect((await cancel()).status).toBe(409);
+    customer.customerFromRequest.mockRejectedValueOnce(new customer.CustomerAuthError("Sign in with your Cedar Google account to place an order."));
+    expect((await cancel()).status).toBe(401);
+    expect(orderDb.rows.get(id).status).toBe("SUBMITTED");
+  });
+
+  it("stops staff moving or charging a cancelled order", async () => {
+    await place();
+    await cancel();
+    expect((await post({ action: "set-status", order_id: id, status: "PREPARING" }, MANAGER)).status).toBe(409);
+    expect(orderDb.rows.get(id).status).toBe("CANCELLED");
+  });
+});

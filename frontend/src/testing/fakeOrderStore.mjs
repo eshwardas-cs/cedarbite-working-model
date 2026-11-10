@@ -10,8 +10,9 @@ const copy = (value) => structuredClone(value);
 const byCreated = (a, b) => String(a.created_at).localeCompare(String(b.created_at));
 
 export const getOrder = vi.fn(async (id) => (rows.has(String(id)) ? copy(rows.get(String(id))) : null));
-export const listActive = vi.fn(async () => [...rows.values()].filter((o) => o.status !== "COLLECTED").sort(byCreated).map(copy));
-export const listHistory = vi.fn(async (limit = 100) => [...rows.values()].filter((o) => o.status === "COLLECTED")
+const finished = (o) => o.status === "COLLECTED" || o.status === "CANCELLED";
+export const listActive = vi.fn(async () => [...rows.values()].filter((o) => !finished(o)).sort(byCreated).map(copy));
+export const listHistory = vi.fn(async (limit = 100) => [...rows.values()].filter(finished)
   .sort((a, b) => String(b.completed_at ?? "").localeCompare(String(a.completed_at ?? ""))).slice(0, limit).map(copy));
 export const listAll = vi.fn(async () => [...rows.values()].sort(byCreated).map(copy));
 export const listForCustomer = vi.fn(async (userId, limit = 100) => [...rows.values()].filter((o) => o.customer_user_id === userId)

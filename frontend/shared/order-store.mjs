@@ -59,7 +59,8 @@ export function rowFromOrder(order) {
     payment_status: order.payment_status == null ? null : String(order.payment_status),
     pickup_start_at: validTime(order.pickup_window?.start_at),
     created_at: validTime(order.created_at) ?? new Date().toISOString(),
-    completed_at: validTime(order.completed_at),
+    // Collected and cancelled orders both leave the queue; this is when they did.
+    completed_at: validTime(order.completed_at) ?? validTime(order.cancelled_at),
     data: order,
   };
 }
@@ -72,12 +73,12 @@ export async function getOrder(id) {
   return rows?.[0]?.data ?? null;
 }
 
-// Orders still in the canteen queue (not yet collected), oldest first.
+// Orders still in the canteen queue (not collected or cancelled), oldest first.
 export async function listActive() {
   return orders(await rest("orders?select=data&is_active=eq.true&order=created_at.asc"));
 }
 
-// Collected orders, most recently completed first.
+// Collected and cancelled orders, most recent first.
 export async function listHistory(limit = 100) {
   return orders(await rest(`orders?select=data&is_active=eq.false&order=completed_at.desc.nullslast,created_at.desc&limit=${Number(limit)}`));
 }
