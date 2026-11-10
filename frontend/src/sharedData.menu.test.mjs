@@ -45,6 +45,8 @@ const customer = vi.hoisted(() => {
   return { CustomerAuthError, student, customerFromRequest: vi.fn(async () => student) };
 });
 vi.mock("../shared/customer-auth.mjs", () => customer);
+vi.mock("../shared/order-store.mjs", () => import("./testing/fakeOrderStore.mjs"));
+import * as orderDb from "./testing/fakeOrderStore.mjs";
 
 import sharedData from "../netlify/functions/shared-data.mjs";
 
@@ -62,6 +64,7 @@ beforeEach(() => {
   mockStore.values.clear();
   mockStore.setJSON.mockClear();
   customer.customerFromRequest.mockClear();
+  orderDb.reset();
   for (const fn of ["readCatalog", "setAvailability", "setPrice", "removeItem", "addItem", "updateItem", "addCategory", "removeCategory", "reorderMenu"]) menu[fn].mockClear();
 });
 
@@ -129,7 +132,7 @@ describe("menu reads and order prices come from Supabase", () => {
   it("refuses an order for a sold-out item", async () => {
     const response = await post(studentOrder([{ item_id: 2, name: "Wonton", quantity: 1 }]));
     expect(response.status).toBe(409);
-    expect(mockStore.setJSON).not.toHaveBeenCalled();
+    expect(orderDb.insertOrder).not.toHaveBeenCalled();
   });
 });
 
@@ -138,7 +141,7 @@ describe("online orders need a Cedar sign-in", () => {
     customer.customerFromRequest.mockRejectedValueOnce(new customer.CustomerAuthError("Sign in with your Cedar Google account to place an order."));
     const response = await post(studentOrder([{ item_id: 1, name: "Samosa", quantity: 1 }]));
     expect(response.status).toBe(401);
-    expect(mockStore.setJSON).not.toHaveBeenCalled();
+    expect(orderDb.insertOrder).not.toHaveBeenCalled();
   });
 
   it("takes the student ID from the sign-in, not from the browser", async () => {
@@ -146,7 +149,7 @@ describe("online orders need a Cedar sign-in", () => {
     body.order.student_id = "7654321";
     const response = await post(body);
     expect(response.status).toBe(201);
-    const saved = mockStore.values.get(`queue/${body.order.id}`);
+    const saved = orderDb.rows.get(body.order.id);
     expect(saved).toMatchObject({ student_id: "1234567", customer_user_id: customer.student.user_id, customer_email: "1234567@cedar.edu.pk" });
     const { order } = await response.json();
     expect(order).not.toHaveProperty("student_id");
@@ -158,7 +161,7 @@ describe("online orders need a Cedar sign-in", () => {
     body.order.payment_method = "wallet";
     const response = await post(body);
     expect(response.status).toBe(400);
-    expect(mockStore.setJSON).not.toHaveBeenCalled();
+    expect(orderDb.insertOrder).not.toHaveBeenCalled();
   });
 
   it("does not let another account reuse someone else's order reference", async () => {
@@ -201,10 +204,52 @@ describe("My orders for Google users", () => {
   it("still finds an order after the canteen moves it to history", async () => {
     const id = "44444444-4444-4444-8444-444444444444";
     await post(order(id, "CB444444"));
-    const saved = mockStore.values.get(`queue/${id}`);
-    mockStore.values.delete(`queue/${id}`);
-    mockStore.values.set(`history/${id}`, { ...saved, status: "COLLECTED" });
+    orderDb.rows.set(id, { ...orderDb.rows.get(id), status: "COLLECTED", completed_at: new Date().toISOString() });
     const { orders } = await (await myOrders()).json();
     expect(orders).toEqual([expect.objectContaining({ pickup_code: "CB444444", status: "COLLECTED" })]);
+  });
+});
+
+describe("orders are kept in Supabase", () => {
+  const id = "55555555-5555-4555-8555-555555555555";
+  const place = () => post({ action: "create-order", order: { id, pickup_code: "CB555555", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
+  const setStatus = (status) => post({ action: "set-status", order_id: id, status }, MANAGER);
+  const stationList = (scope) => sharedData(new Request(`${ENDPOINT}?scope=${scope}`, { headers: MANAGER }));
+
+  it("saves a new online order in the orders table, not Netlify storage", async () => {
+    expect((await place()).status).toBe(201);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "SUBMITTED", total_paisa: 15000 });
+    expect([...mockStore.values.keys()].some((key) => key.startsWith("queue/") || key.startsWith("customers/"))).toBe(false);
+  });
+
+  it("moves an order through the canteen and into history", async () => {
+    await place();
+    expect((await setStatus("PREPARING")).status).toBe(200);
+    expect((await setStatus("READY")).status).toBe(200);
+    expect((await setStatus("COLLECTED")).status).toBe(200);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "COLLECTED", completed_at: expect.any(String) });
+    expect((await (await stationList("queue")).json()).orders).toEqual([]);
+    expect((await (await stationList("history")).json()).orders.map((o) => o.id)).toEqual([id]);
+    expect((await setStatus("COLLECTED")).status).toBe(200); // pressing again is harmless
+  });
+
+  it("refuses a status change if another screen changed the order first", async () => {
+    await place();
+    orderDb.updateOrder.mockImplementationOnce(async () => {
+      orderDb.rows.set(id, { ...orderDb.rows.get(id), status: "PREPARING" });
+      return null; // the other screen won
+    });
+    const response = await post({ action: "set-status", order_id: id, status: "PREPARING" }, MANAGER);
+    expect(response.status).toBe(200); // it already has the status we wanted
+    orderDb.updateOrder.mockImplementationOnce(async () => null);
+    orderDb.rows.set(id, { ...orderDb.rows.get(id), status: "READY" });
+    expect((await post({ action: "set-status", order_id: id, status: "COLLECTED" }, MANAGER)).status).toBe(409);
+  });
+
+  it("only deletes new orders, and only completed ones from history", async () => {
+    await place();
+    expect((await post({ action: "delete-history-order", order_id: id }, MANAGER)).status).toBe(404);
+    expect((await post({ action: "delete-order", order_id: id }, MANAGER)).status).toBe(200);
+    expect(orderDb.rows.has(id)).toBe(false);
   });
 });

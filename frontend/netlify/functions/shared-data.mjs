@@ -2,6 +2,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import * as menuStore from "../../shared/menu-store.mjs";
 import * as customerAuth from "../../shared/customer-auth.mjs";
+import * as orderStore from "../../shared/order-store.mjs";
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
@@ -203,6 +204,23 @@ async function migrateLegacyQueue() {
   await store.setJSON(marker, true);
 }
 
+// Orders live in Supabase (shared/order-store.mjs). The first request after the move copies the orders
+// that were saved in Netlify storage across, once; the Netlify copies are left in place as a backup.
+let ordersInSupabase = false;
+async function ensureOrdersInSupabase() {
+  if (ordersInSupabase) return;
+  const marker = "meta/orders-in-supabase-v1";
+  if (!await readJSON(marker)) {
+    await migrateLegacyQueue();
+    const [queue, history] = await Promise.all([readByPrefix("queue/"), readByPrefix("history/")]);
+    const copied = await orderStore.importOrders([...history, ...queue]);
+    await store.setJSON(marker, { moved_at: new Date().toISOString(), orders: copied });
+  }
+  ordersInSupabase = true;
+}
+const orderDb = Object.fromEntries(["getOrder", "listActive", "listHistory", "listAll", "listForCustomer", "insertOrder", "updateOrder", "deleteOrder"]
+  .map((name) => [name, async (...args) => { await ensureOrdersInSupabase(); return orderStore[name](...args); }]));
+
 export default async (request) => {
   let operation = request.method === "GET" ? "load shared canteen data" : "save shared canteen data";
   try {
@@ -212,19 +230,15 @@ export default async (request) => {
         const id = String(url.searchParams.get("id") ?? "");
         const pickupCode = String(url.searchParams.get("pickup_code") ?? "");
         if (!/^[a-f0-9-]{36}$/i.test(id) || !/^CB[A-F0-9]{6}$/.test(pickupCode)) return reply({ error: "Order details are invalid." }, 400);
-        const order = await readJSON(`queue/${id}`) || await readJSON(`history/${id}`);
+        const order = await orderDb.getOrder(id);
         if (!order || order.pickup_code !== pickupCode) return reply({ order: null });
         return reply({ order: forStudent(order) });
       }
       if (url.searchParams.get("scope") === "my-orders") {
-        // Only the signed-in person's own orders, found through their order list (customers/<user id>).
+        // Only the signed-in person's own orders.
         const customer = await customerAuth.customerFromRequest(request);
-        const list = await readJSON(`customers/${customer.user_id}`);
-        const ids = Array.isArray(list?.order_ids) ? list.order_ids.slice(0, MAX_ORDERS_PER_CUSTOMER) : [];
-        const found = await Promise.all(ids.map(async (id) => await readJSON(`queue/${id}`) || await readJSON(`history/${id}`)));
-        const orders = found
-          .filter((order) => order && order.customer_user_id === customer.user_id)
-          .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        const orders = (await orderDb.listForCustomer(customer.user_id, MAX_ORDERS_PER_CUSTOMER))
+          .filter((order) => order.customer_user_id === customer.user_id)
           .map(forStudent);
         return reply({ orders });
       }
@@ -251,24 +265,20 @@ export default async (request) => {
         return reply({ categories: (await menuStore.readCatalog()).categories });
       }
       if (url.searchParams.get("scope") === "pickup-windows") {
-        const orders = await readByPrefix("queue/");
-        return reply({ windows: listPickupWindows(orders) });
+        return reply({ windows: listPickupWindows(await orderDb.listActive()) });
       }
       if (url.searchParams.get("scope") === "counter-order") {
         if (!await staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
         if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to check this order." }, 401);
         const id = String(url.searchParams.get("id") ?? "");
         if (!id || id.length > 80) return reply({ error: "Order ID is invalid." }, 400);
-        const order = await readJSON(`queue/${id}`) || await readJSON(`history/${id}`);
-        return reply({ order: order ?? null });
+        return reply({ order: await orderDb.getOrder(id) });
       }
       if (["sales-dates", "sales-summary"].includes(url.searchParams.get("scope"))) {
         if (!await staffConfigured("order_manager")) return reply({ error: "The order manager login is not configured yet." }, 503);
         if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to the order manager station to view sales summaries." }, 401);
-        await migrateLegacyQueue();
         const today = reportDayKey(new Date());
-        const [queue, history] = await Promise.all([readByPrefix("queue/"), readByPrefix("history/")]);
-        const allOrders = [...queue, ...history];
+        const allOrders = await orderDb.listAll();
         if (url.searchParams.get("scope") === "sales-dates") {
           const reports = await readByPrefix("sales/daily/");
           const removedReports = await readByPrefix("sales/removed/");
@@ -299,13 +309,12 @@ export default async (request) => {
         const station = scope === "cash-desk" || scope === "wallet-history" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
         if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
         if (!await isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
-        await migrateLegacyQueue();
         if (scope === "wallet-history") {
           const entries = await readByPrefix("wallet-topups/");
           entries.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
           return reply({ entries: entries.slice(0, 200) });
         }
-        let orders = await readByPrefix(scope === "history" ? "history/" : "queue/");
+        let orders = scope === "history" ? await orderDb.listHistory(100) : await orderDb.listActive();
         if (scope === "cash-desk") orders = orders.filter((order) => order.payment_method === "cash" && order.payment_status !== "PAID" && order.status !== "COLLECTED");
         if (scope === "kitchen") orders = orders.filter((order) => order.status === "PREPARING").map(({ student_id, payment_method, payment_status, ...order }) => order);
         if (scope === "history") orders.sort((a, b) => Date.parse(b.completed_at ?? b.created_at) - Date.parse(a.completed_at ?? a.created_at));
@@ -355,7 +364,7 @@ export default async (request) => {
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
       // Who is ordering comes from their Supabase (Google) sign-in, never from the browser's order details.
       const customer = await customerAuth.customerFromRequest(request);
-      const existingOrder = await readJSON(`queue/${order.id}`) || await readJSON(`history/${order.id}`);
+      const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) {
         if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.customer_user_id ?? "") !== customer.user_id) return reply({ error: "This order reference is already in use." }, 409);
         return reply({ order: forStudent(existingOrder), duplicate: true });
@@ -373,7 +382,7 @@ export default async (request) => {
       const unavailableItem = order.items.find((item) => menuItemsById.get(String(item.item_id))?.available === false);
       if (unavailableItem) return reply({ error: `${unavailableItem.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
       if (order.mode === "SCHEDULED") {
-        const activeOrders = await readByPrefix("queue/");
+        const activeOrders = await orderDb.listActive();
         const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
         if (!slotAvailable) return reply({ error: "That pickup slot is full or no longer available. Choose another 10-minute slot." }, 409);
       }
@@ -421,12 +430,12 @@ export default async (request) => {
         payment_method: ["cash", "easypaisa", "jazzcash", "bank", "card"].includes(order.payment_method) ? order.payment_method : "cash",
         payment_status: order.payment_method === "easypaisa" || order.payment_method === "jazzcash" || order.payment_method === "bank" || order.payment_method === "card" ? "PENDING" : "UNPAID",
       };
-      await store.setJSON(`queue/${saved.id}`, saved);
-      // Remember this order on the person's own list, so "My orders" can find it later.
-      const customerKey = `customers/${customer.user_id}`;
-      const customerList = await readJSON(customerKey);
-      const previousIds = Array.isArray(customerList?.order_ids) ? customerList.order_ids.filter((id) => id !== saved.id) : [];
-      await store.setJSON(customerKey, { order_ids: [saved.id, ...previousIds].slice(0, MAX_ORDERS_PER_CUSTOMER) });
+      if (!await orderDb.insertOrder(saved)) {
+        // The same order arrived twice at the same moment (a retry): answer with the one that was saved.
+        const already = await orderDb.getOrder(saved.id);
+        if (already && already.pickup_code === saved.pickup_code && already.customer_user_id === customer.user_id) return reply({ order: forStudent(already), duplicate: true });
+        return reply({ error: "This order reference is already in use." }, 409);
+      }
       return reply({ order: forStudent(saved) }, 201);
     }
 
@@ -435,7 +444,7 @@ export default async (request) => {
       if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to place an in-person order." }, 401);
       const order = body.order;
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
-      const existingOrder = await readJSON(`queue/${order.id}`) || await readJSON(`history/${order.id}`);
+      const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) return reply({ order: existingOrder, duplicate: true });
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead." }, 400);
@@ -451,7 +460,7 @@ export default async (request) => {
       const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, order.mode);
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
       const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
-      await store.setJSON(`queue/${saved.id}`, saved);
+      if (!await orderDb.insertOrder(saved)) return reply({ order: await orderDb.getOrder(saved.id), duplicate: true });
       return reply({ order: saved }, 201);
     }
 
@@ -505,14 +514,12 @@ export default async (request) => {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
       const orderId = String(body.order_id ?? "");
-      const key = `queue/${orderId}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "Order not found." }, 404);
+      const order = orderId && orderId.length <= 80 ? await orderDb.getOrder(orderId) : null;
+      if (!order || order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
       if (order.payment_method !== "cash") return reply({ error: "This order is not marked for cash payment." }, 409);
       if (order.payment_status === "PAID") return reply({ order, duplicate: true });
       const updated = { ...order, payment_status: "PAID", cash_received_at: new Date().toISOString(), cash_received_by: request.headers.get("x-canteen-username") || "cashier" };
-      await store.setJSON(key, updated);
-      return reply({ order: updated });
+      return reply({ order: await orderDb.updateOrder(updated) ?? updated });
     }
 
     if (!await managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
@@ -613,11 +620,10 @@ export default async (request) => {
       if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to delete a new order." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
-      const key = `queue/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "Order is no longer in the active queue." }, 404);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || order.status === "COLLECTED") return reply({ error: "Order is no longer in the active queue." }, 404);
       if (order.status !== "SUBMITTED") return reply({ error: "Only new, unaccepted orders can be deleted." }, 409);
-      await store.delete(key);
+      await orderDb.deleteOrder(body.order_id);
       return reply({ deleted: true, order_id: body.order_id });
     }
 
@@ -625,10 +631,9 @@ export default async (request) => {
       if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to delete an order from history." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
-      const key = `history/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "This order is no longer in order history." }, 404);
-      await store.delete(key);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || order.status !== "COLLECTED") return reply({ error: "This order is no longer in order history." }, 404);
+      await orderDb.deleteOrder(body.order_id);
       return reply({ deleted: true, order_id: body.order_id });
     }
 
@@ -636,9 +641,8 @@ export default async (request) => {
       if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to refund an order." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
-      const key = `history/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "This completed order is no longer in order history." }, 404);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || order.status !== "COLLECTED") return reply({ error: "This completed order is no longer in order history." }, 404);
       if (order.refund_status === "REFUNDED") return reply({ order, duplicate: true });
       const method = String(order.payment_method ?? "cash").trim().toLowerCase();
       const amount = orderTotalPaisa(order);
@@ -659,36 +663,33 @@ export default async (request) => {
         return reply({ error: "No payment has been recorded for this order. Unpaid orders cannot be refunded." }, 409);
       }
       const updated = { ...order, refund_status: "REFUNDED", refund_method: method === "wallet" ? "wallet" : "manual", refunded_at: new Date().toISOString(), refunded_by: request.headers.get("x-canteen-username") || "manager", refund_amount_paisa: amount };
-      await store.setJSON(key, updated);
-      return reply({ order: updated });
+      return reply({ order: await orderDb.updateOrder(updated) ?? updated });
     }
 
     if (body.action === "set-status") {
       if (typeof body.order_id !== "string" || typeof body.status !== "string") return reply({ error: "Order status details are invalid." }, 400);
-      const key = `queue/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) {
-        const completed = await readJSON(`history/${body.order_id}`);
-        if (completed && body.status === "COLLECTED") return reply({ order: completed, duplicate: true });
-        return reply({ error: "Order not found." }, 404);
-      }
+      if (body.order_id.length > 80) return reply({ error: "Order not found." }, 404);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order) return reply({ error: "Order not found." }, 404);
       if (order.status === body.status) return reply({ order, duplicate: true });
+      if (order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
       if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
-      const updated = { ...order, status: body.status };
-      if (body.status === "COLLECTED") {
-        const completed = { ...updated, completed_at: new Date().toISOString() };
-        await store.setJSON(`history/${order.id}`, completed);
-        await store.delete(key);
-        return reply({ order: completed });
-      }
-      else await store.setJSON(key, updated);
-      return reply({ order: updated });
+      const updated = body.status === "COLLECTED"
+        ? { ...order, status: body.status, completed_at: new Date().toISOString() }
+        : { ...order, status: body.status };
+      // Only saves if no other screen moved this order on in the meantime.
+      const saved = await orderDb.updateOrder(updated, { expectedStatus: order.status });
+      if (saved) return reply({ order: saved });
+      const current = await orderDb.getOrder(body.order_id);
+      if (current?.status === body.status) return reply({ order: current, duplicate: true });
+      return reply({ error: "This order was just changed on another screen. Refresh and try again." }, 409);
     }
 
     return reply({ error: "Unknown action." }, 400);
   } catch (error) {
     if (error instanceof menuStore.MenuStoreError) return reply({ error: error.message }, error.status);
     if (error instanceof customerAuth.CustomerAuthError) return reply({ error: error.message }, error.status);
+    if (error instanceof orderStore.OrderStoreError) return reply({ error: error.message }, error.status);
     console.error("CedarBite shared data request failed", { operation, error });
     const message = operation === "add-menu-item"
       ? "The menu item could not be saved. Refresh the menu and try again."
