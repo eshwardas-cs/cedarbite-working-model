@@ -11,7 +11,7 @@ export class CustomerAuthError extends Error {
   }
 }
 
-const SIGN_IN_AGAIN = "Your sign-in has expired. Sign in again with your Cedar Google account, then place the order.";
+const SIGN_IN_AGAIN = "Your sign-in has expired. Sign in again with your Cedar Google account, then try again.";
 
 function connection() {
   const url = String(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "")
@@ -26,7 +26,7 @@ function connection() {
 // Returns { user_id, email, role, student_id } for a signed-in Cedar account, or throws CustomerAuthError.
 export async function customerFromRequest(request) {
   const match = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "");
-  if (!match) throw new CustomerAuthError("Sign in with your Cedar Google account to place an order.");
+  if (!match) throw new CustomerAuthError("Sign in with your Cedar Google account to continue.");
   const token = match[1];
   const { url, key } = connection();
 
@@ -50,7 +50,7 @@ export async function customerFromRequest(request) {
     throw new CustomerAuthError("Your account could not be checked right now. Please try again.", 502);
   }
   const [profile] = (await profileResponse.json().catch(() => [])) ?? [];
-  if (!profile?.email) throw new CustomerAuthError("This account is not allowed to order. Sign in with your Cedar Google account.", 403);
+  if (!profile?.email) throw new CustomerAuthError("This account is not allowed to use CedarBite ordering. Sign in with your Cedar Google account.", 403);
 
   const email = String(profile.email).toLowerCase();
   const studentNumber = /^(\d{7})@cedar\.edu\.pk$/.exec(email);

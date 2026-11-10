@@ -36,3 +36,17 @@ class MenuItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     category: Mapped[MenuCategory] = relationship(back_populates="items")
+    options: Mapped[list["MenuItemOption"]] = relationship(
+        back_populates="item", cascade="all, delete-orphan", order_by="MenuItemOption.sort_order")
+
+
+class MenuItemOption(Base):
+    """A required customer choice such as the flavour of a cold drink."""
+    __tablename__ = "menu_item_options"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    menu_item_id: Mapped[int] = mapped_column(ForeignKey("menu_items.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    is_available: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    item: Mapped[MenuItem] = relationship(back_populates="options")

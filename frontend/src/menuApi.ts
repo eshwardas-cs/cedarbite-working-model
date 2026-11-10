@@ -19,6 +19,7 @@ type MenuItemRow = {
   scheduled_allowed: boolean;
   prep_minutes: number | null;
   image_path: string | null;
+  menu_item_options?: { id: string; name: string; is_available: boolean; sort_order: number }[];
 };
 
 export async function fetchMenuFromSupabase() {
@@ -28,7 +29,7 @@ export async function fetchMenuFromSupabase() {
   const { data, error } = await supabase
     .from("menu_categories")
     .select(
-      "id, name, sort_order, menu_items(id, category_id, name, description, price_paisa, addon_name, addon_price_paisa, is_available, quick_allowed, scheduled_allowed, prep_minutes, image_path)",
+      "id, name, sort_order, menu_items(id, category_id, name, description, price_paisa, addon_name, addon_price_paisa, is_available, quick_allowed, scheduled_allowed, prep_minutes, image_path, menu_item_options(id, name, is_available, sort_order))",
     )
     .order("sort_order")
     .order("id")
@@ -59,6 +60,10 @@ export async function fetchMenuFromSupabase() {
       image_data: item.image_path
         ? supabase.storage.from(IMAGE_BUCKET).getPublicUrl(item.image_path).data.publicUrl
         : null,
+      // Selectable options (e.g. drink flavours); an item with options needs one chosen.
+      options: [...(item.menu_item_options ?? [])]
+        .sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
+        .map((option) => ({ id: option.id, name: option.name, available: option.is_available })),
     })),
   }));
 }

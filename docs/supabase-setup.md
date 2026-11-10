@@ -45,6 +45,12 @@ In **SQL Editor**, run these files in order (each one is safe to run again):
 2. `supabase/migrations/0002_auth_cedar_only.sql`: the Cedar-only sign-in rule, profiles and the staff list.
 3. `supabase/migrations/0003_menu_editing.sql`: item order (`sort_order`) and two server-only functions
    for reordering the menu and removing a category. Run it **before** deploying the menu-editing code.
+4. `supabase/migrations/0004_orders.sql`: the `orders` table (server-only: no access for browser keys).
+   Run it **before** deploying the code that keeps orders in Supabase. On the first request after that
+   deploy, the function copies the orders saved in Netlify storage into this table once (marker
+   `meta/orders-in-supabase-v1`); the Netlify copies stay as a backup.
+5. `supabase/migrations/0005_order_cancel.sql`: cancelled orders leave the kitchen queue (`is_active` now
+   means "not collected and not cancelled"). Run it **before** deploying "Cancel order".
 
 ### 3. Menu data (one-time import)
 This copies `frontend/src/catalog.json` (14 categories, 51 items and their photos) into Supabase:
@@ -97,9 +103,19 @@ The publishable key is meant to be public. Security comes from the database rule
   the order; the Netlify function (`frontend/shared/customer-auth.mjs`) asks Supabase whose token it is and
   reads their profile with the secret key. The student ID saved on the order comes from that profile, never
   from the browser. An order without a valid sign-in is refused and nothing is saved.
+- **Orders live in Supabase** (`public.orders`, via `frontend/shared/order-store.mjs`). Each row keeps the
+  whole order in `data` plus searchable copies (status, customer, totals, times). A status change only
+  saves if no other screen changed the order first.
+- **My orders:** the `?scope=my-orders` request needs the same sign-in token and returns only that person's
+  orders (refreshed every 10 seconds on the My orders page). Online orders placed before PR #4 have no
+  owner, so they don't appear on anyone's list.
+- **Cancel order:** on My orders, a signed-in customer can cancel their own order only while it is
+  `SUBMITTED` and unpaid (`cancel-order` action). The save only happens if the order is still `SUBMITTED`,
+  so if the kitchen accepts it at the same moment, the kitchen wins. Cancelled orders leave the queue, move
+  to history, can't be moved on or marked paid by staff, and don't count as "orders placed" in sales.
 - **Wallet payment is switched off** until the wallet moves to Supabase: nothing can check a balance yet, so
   the server refuses `wallet` orders instead of marking them paid, and checkout no longer offers it.
-- Netlify storage no longer holds any menu data. Deals are still stored there for now, checked against
+- Netlify storage no longer holds menu or order data. Deals are still stored there for now, checked against
   the Supabase menu.
 
 ### 7. Staff accounts (optional)

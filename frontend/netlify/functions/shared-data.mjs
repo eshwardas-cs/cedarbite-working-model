@@ -2,6 +2,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import * as menuStore from "../../shared/menu-store.mjs";
 import * as customerAuth from "../../shared/customer-auth.mjs";
+import * as orderStore from "../../shared/order-store.mjs";
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
@@ -21,6 +22,11 @@ function validReportDay(value) {
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
+function validReportMonth(value) {
+  if (typeof value !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) return false;
+  const [year, month] = value.split("-").map(Number);
+  return year >= 2000 && year <= 9999 && month >= 1 && month <= 12;
+}
 function orderTotalPaisa(order) {
   if (Number.isSafeInteger(order.total_paisa) && order.total_paisa >= 0) return order.total_paisa;
   const match = String(order.total_display ?? "").match(/([\d,]+)(?:\.([\d]{1,2}))?/);
@@ -29,7 +35,7 @@ function orderTotalPaisa(order) {
 }
 function dailySalesSummary(date, orders) {
   const unique = [...new Map(orders.filter((order) => order?.id != null).map((order) => [String(order.id), order])).values()];
-  const placed = unique.filter((order) => orderDay(order.created_at) === date);
+  const placed = unique.filter((order) => order.status !== "CANCELLED" && orderDay(order.created_at) === date);
   const paid = unique.filter((order) => order.payment_status === "PAID" && orderDay(order.cash_received_at || order.paid_at || order.created_at) === date);
   const itemCounts = new Map();
   const methods = new Map();
@@ -67,6 +73,64 @@ function dailySalesSummary(date, orders) {
     items_sold: [...itemCounts.values()].sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name)),
     payment_methods: [...methods.values()].sort((a, b) => b.amount_paisa - a.amount_paisa),
     hourly_sales: [...hourly.entries()].map(([hour, amount_paisa]) => ({ hour, amount_paisa })).sort((a, b) => a.hour - b.hour),
+  };
+}
+function monthlySalesSummary(month, orders) {
+  const unique = [...new Map(orders.filter((order) => order?.id != null).map((order) => [String(order.id), order])).values()];
+  const dayCount = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+  const itemCounts = new Map();
+  const methods = new Map();
+  const daily = [];
+  let ordersPlaced = 0;
+  let placedOrderValuePaisa = 0;
+  let pendingPaymentOrders = 0;
+  let paidOrders = 0;
+  let paidSalesPaisa = 0;
+  let unitsSold = 0;
+  let refunds = 0;
+  let refundsPaisa = 0;
+  for (let day = 1; day <= dayCount; day += 1) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const report = dailySalesSummary(date, unique);
+    if (report.orders_placed || report.paid_orders) daily.push({ date, orders_placed: report.orders_placed, paid_orders: report.paid_orders, paid_sales_paisa: report.paid_sales_paisa, units_sold: report.units_sold, pending_payment_orders: report.pending_payment_orders });
+    ordersPlaced += report.orders_placed;
+    placedOrderValuePaisa += report.placed_order_value_paisa;
+    pendingPaymentOrders += report.pending_payment_orders;
+    paidOrders += report.paid_orders;
+    paidSalesPaisa += report.paid_sales_paisa;
+    unitsSold += report.units_sold;
+    for (const item of report.items_sold) {
+      const entry = itemCounts.get(item.name) || { name: item.name, quantity: 0 };
+      entry.quantity += item.quantity;
+      itemCounts.set(item.name, entry);
+    }
+    for (const method of report.payment_methods) {
+      const entry = methods.get(method.method) || { method: method.method, count: 0, amount_paisa: 0 };
+      entry.count += method.count;
+      entry.amount_paisa += method.amount_paisa;
+      methods.set(method.method, entry);
+    }
+  }
+  for (const order of unique) {
+    if (order.refund_status !== "REFUNDED" || orderDay(order.refunded_at) !== month.slice(0, 7)) continue;
+    refunds += 1;
+    refundsPaisa += orderTotalPaisa(order);
+  }
+  return {
+    month,
+    generated_at: new Date().toISOString(),
+    orders_placed: ordersPlaced,
+    placed_order_value_paisa: placedOrderValuePaisa,
+    pending_payment_orders: pendingPaymentOrders,
+    paid_orders: paidOrders,
+    paid_sales_paisa: paidSalesPaisa,
+    refunds,
+    refunds_paisa: refundsPaisa,
+    net_sales_paisa: paidSalesPaisa - refundsPaisa,
+    units_sold: unitsSold,
+    items_sold: [...itemCounts.values()].sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name)),
+    payment_methods: [...methods.values()].sort((a, b) => b.amount_paisa - a.amount_paisa),
+    daily_breakdown: daily,
   };
 }
 function safeEqual(left, right) {
@@ -152,6 +216,16 @@ const managerConfigured = async () => staffConfigured("order_manager");
 const isManager = async (request) => isStaff(request, "order_manager");
 const stationLabel = { order_manager: "order control", order_taker: "counter orders", cashier: "cash desk", kitchen: "kitchen monitor" };
 
+// What a student's own browser may see of an order (no other people's details, no internal IDs).
+function forStudent(order) {
+  const studentOrder = { ...order };
+  delete studentOrder.student_id;
+  delete studentOrder.customer_user_id;
+  delete studentOrder.customer_email;
+  return studentOrder;
+}
+const MAX_ORDERS_PER_CUSTOMER = 100;
+
 async function readByPrefix(prefix) {
   const { blobs } = await listBlobs(prefix);
   const records = await Promise.all(blobs.map(({ key }) => readJSON(key).catch((error) => {
@@ -172,13 +246,23 @@ function priceSharedOrderLines(catalog, lines, mode) {
     if (mode === "QUICK" && !item.quick_allowed || mode === "SCHEDULED" && !item.scheduled_allowed && !item.quick_allowed) return { error: `${item.name} is not available for this order type.` };
     const addon_selected = line.addon_selected === true;
     if (addon_selected && !item.addon_name) return { error: `The optional extra for ${item.name} is no longer available. Refresh your bucket.` };
+    // Items with options need one chosen, in stock, and belonging to this item (an option never changes the price).
+    const itemOptions = Array.isArray(item.options) ? item.options : [];
+    let option = null;
+    if (itemOptions.length) {
+      option = itemOptions.find((choice) => choice.id === line.option_id) ?? null;
+      if (!option) return { error: `Choose an option for ${item.name}.` };
+      if (option.available === false) return { error: `${option.name} is out of stock. Choose another option for ${item.name}.` };
+    } else if (line.option_id != null) {
+      return { error: `That option is no longer available for ${item.name}. Refresh your bucket.` };
+    }
     const addonPrice = addon_selected ? Number(item.addon_price_paisa ?? 0) : 0;
     if (!Number.isSafeInteger(addonPrice) || addonPrice < 0) return { error: `The optional extra price for ${item.name} is invalid.` };
     const unit_price_paisa = Number(item.price_paisa) + addonPrice;
     if (!Number.isSafeInteger(unit_price_paisa) || unit_price_paisa < 0) return { error: `The price for ${item.name} is invalid.` };
-    const name = `${item.name}${addon_selected ? ` + ${item.addon_name}` : ""}`;
+    const name = `${item.name}${option ? ` · ${option.name}` : ""}${addon_selected ? ` + ${item.addon_name}` : ""}`;
     total_paisa += unit_price_paisa * line.quantity;
-    priced.push({ item_id: item.id, name, quantity: line.quantity, unit_price_paisa, addon_selected });
+    priced.push({ item_id: item.id, name, quantity: line.quantity, unit_price_paisa, addon_selected, ...(option ? { option_id: option.id } : {}) });
   }
   return { items: priced, total_paisa, total_display: `Rs ${Math.round(total_paisa / 100).toLocaleString("en-PK")}` };
 }
@@ -193,6 +277,23 @@ async function migrateLegacyQueue() {
   await store.setJSON(marker, true);
 }
 
+// Orders live in Supabase (shared/order-store.mjs). The first request after the move copies the orders
+// that were saved in Netlify storage across, once; the Netlify copies are left in place as a backup.
+let ordersInSupabase = false;
+async function ensureOrdersInSupabase() {
+  if (ordersInSupabase) return;
+  const marker = "meta/orders-in-supabase-v1";
+  if (!await readJSON(marker)) {
+    await migrateLegacyQueue();
+    const [queue, history] = await Promise.all([readByPrefix("queue/"), readByPrefix("history/")]);
+    const copied = await orderStore.importOrders([...history, ...queue]);
+    await store.setJSON(marker, { moved_at: new Date().toISOString(), orders: copied });
+  }
+  ordersInSupabase = true;
+}
+const orderDb = Object.fromEntries(["getOrder", "listActive", "listHistory", "listAll", "listForCustomer", "insertOrder", "updateOrder", "deleteOrder"]
+  .map((name) => [name, async (...args) => { await ensureOrdersInSupabase(); return orderStore[name](...args); }]));
+
 export default async (request) => {
   let operation = request.method === "GET" ? "load shared canteen data" : "save shared canteen data";
   try {
@@ -202,13 +303,17 @@ export default async (request) => {
         const id = String(url.searchParams.get("id") ?? "");
         const pickupCode = String(url.searchParams.get("pickup_code") ?? "");
         if (!/^[a-f0-9-]{36}$/i.test(id) || !/^CB[A-F0-9]{6}$/.test(pickupCode)) return reply({ error: "Order details are invalid." }, 400);
-        const order = await readJSON(`queue/${id}`) || await readJSON(`history/${id}`);
+        const order = await orderDb.getOrder(id);
         if (!order || order.pickup_code !== pickupCode) return reply({ order: null });
-        const studentOrder = { ...order };
-        delete studentOrder.student_id;
-        delete studentOrder.customer_user_id;
-        delete studentOrder.customer_email;
-        return reply({ order: studentOrder });
+        return reply({ order: forStudent(order) });
+      }
+      if (url.searchParams.get("scope") === "my-orders") {
+        // Only the signed-in person's own orders.
+        const customer = await customerAuth.customerFromRequest(request);
+        const orders = (await orderDb.listForCustomer(customer.user_id, MAX_ORDERS_PER_CUSTOMER))
+          .filter((order) => order.customer_user_id === customer.user_id)
+          .map(forStudent);
+        return reply({ orders });
       }
       if (url.searchParams.get("scope") === "ordering-status") {
         const settings = await readJSON("settings/ordering") || { paused: false };
@@ -233,24 +338,20 @@ export default async (request) => {
         return reply({ categories: (await menuStore.readCatalog()).categories });
       }
       if (url.searchParams.get("scope") === "pickup-windows") {
-        const orders = await readByPrefix("queue/");
-        return reply({ windows: listPickupWindows(orders) });
+        return reply({ windows: listPickupWindows(await orderDb.listActive()) });
       }
       if (url.searchParams.get("scope") === "counter-order") {
         if (!await staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
         if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to check this order." }, 401);
         const id = String(url.searchParams.get("id") ?? "");
         if (!id || id.length > 80) return reply({ error: "Order ID is invalid." }, 400);
-        const order = await readJSON(`queue/${id}`) || await readJSON(`history/${id}`);
-        return reply({ order: order ?? null });
+        return reply({ order: await orderDb.getOrder(id) });
       }
-      if (["sales-dates", "sales-summary"].includes(url.searchParams.get("scope"))) {
+      if (["sales-dates", "sales-summary", "sales-months", "sales-month"].includes(url.searchParams.get("scope"))) {
         if (!await staffConfigured("order_manager")) return reply({ error: "The order manager login is not configured yet." }, 503);
         if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to the order manager station to view sales summaries." }, 401);
-        await migrateLegacyQueue();
         const today = reportDayKey(new Date());
-        const [queue, history] = await Promise.all([readByPrefix("queue/"), readByPrefix("history/")]);
-        const allOrders = [...queue, ...history];
+        const allOrders = await orderDb.listAll();
         if (url.searchParams.get("scope") === "sales-dates") {
           const reports = await readByPrefix("sales/daily/");
           const removedReports = await readByPrefix("sales/removed/");
@@ -265,6 +366,27 @@ export default async (request) => {
             }
           }
           return reply({ dates: [...dates].filter((date) => validReportDay(date) && date <= today && !removedDates.has(date)).sort((a, b) => b.localeCompare(a)) });
+        }
+        if (url.searchParams.get("scope") === "sales-months") {
+          const months = new Set([today.slice(0, 7)]);
+          for (const order of allOrders) {
+            const createdDate = orderDay(order.created_at);
+            if (createdDate) months.add(createdDate.slice(0, 7));
+            if (order.payment_status === "PAID") {
+              const paidDate = orderDay(order.cash_received_at || order.paid_at || order.created_at);
+              if (paidDate) months.add(paidDate.slice(0, 7));
+            }
+            if (order.refund_status === "REFUNDED") {
+              const refundDate = orderDay(order.refunded_at);
+              if (refundDate) months.add(refundDate.slice(0, 7));
+            }
+          }
+          return reply({ months: [...months].filter((month) => validReportMonth(month) && month <= today.slice(0, 7)).sort((a, b) => b.localeCompare(a)) });
+        }
+        if (url.searchParams.get("scope") === "sales-month") {
+          const month = url.searchParams.get("month");
+          if (!validReportMonth(month) || month > today.slice(0, 7)) return reply({ error: "Choose a valid sales month up to the current month." }, 400);
+          return reply({ report: monthlySalesSummary(month, allOrders) });
         }
         const date = url.searchParams.get("date");
         if (!validReportDay(date) || date > today) return reply({ error: "Choose a valid report date up to today." }, 400);
@@ -281,13 +403,12 @@ export default async (request) => {
         const station = scope === "cash-desk" || scope === "wallet-history" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
         if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
         if (!await isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
-        await migrateLegacyQueue();
         if (scope === "wallet-history") {
           const entries = await readByPrefix("wallet-topups/");
           entries.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
           return reply({ entries: entries.slice(0, 200) });
         }
-        let orders = await readByPrefix(scope === "history" ? "history/" : "queue/");
+        let orders = scope === "history" ? await orderDb.listHistory(100) : await orderDb.listActive();
         if (scope === "cash-desk") orders = orders.filter((order) => order.payment_method === "cash" && order.payment_status !== "PAID" && order.status !== "COLLECTED");
         if (scope === "kitchen") orders = orders.filter((order) => order.status === "PREPARING").map(({ student_id, payment_method, payment_status, ...order }) => order);
         if (scope === "history") orders.sort((a, b) => Date.parse(b.completed_at ?? b.created_at) - Date.parse(a.completed_at ?? a.created_at));
@@ -337,14 +458,10 @@ export default async (request) => {
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
       // Who is ordering comes from their Supabase (Google) sign-in, never from the browser's order details.
       const customer = await customerAuth.customerFromRequest(request);
-      const existingOrder = await readJSON(`queue/${order.id}`) || await readJSON(`history/${order.id}`);
+      const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) {
         if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.customer_user_id ?? "") !== customer.user_id) return reply({ error: "This order reference is already in use." }, 409);
-        const studentOrder = { ...existingOrder };
-        delete studentOrder.student_id;
-        delete studentOrder.customer_user_id;
-        delete studentOrder.customer_email;
-        return reply({ order: studentOrder, duplicate: true });
+        return reply({ order: forStudent(existingOrder), duplicate: true });
       }
       // The wallet is not built yet, so nothing can check a balance. Refuse it rather than mark an order PAID for free.
       if (order.payment_method === "wallet") return reply({ error: "The CedarBite wallet isn't available yet. Choose another payment method." }, 400);
@@ -353,13 +470,13 @@ export default async (request) => {
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
-      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
+      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const catalog = await menuStore.readCatalog();
       const menuItemsById = new Map(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item]));
       const unavailableItem = order.items.find((item) => menuItemsById.get(String(item.item_id))?.available === false);
       if (unavailableItem) return reply({ error: `${unavailableItem.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
       if (order.mode === "SCHEDULED") {
-        const activeOrders = await readByPrefix("queue/");
+        const activeOrders = await orderDb.listActive();
         const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
         if (!slotAvailable) return reply({ error: "That pickup slot is full or no longer available. Choose another 10-minute slot." }, 409);
       }
@@ -407,12 +524,32 @@ export default async (request) => {
         payment_method: ["cash", "easypaisa", "jazzcash", "bank", "card"].includes(order.payment_method) ? order.payment_method : "cash",
         payment_status: order.payment_method === "easypaisa" || order.payment_method === "jazzcash" || order.payment_method === "bank" || order.payment_method === "card" ? "PENDING" : "UNPAID",
       };
-      await store.setJSON(`queue/${saved.id}`, saved);
-      const studentOrder = { ...saved };
-      delete studentOrder.student_id;
-      delete studentOrder.customer_user_id;
-      delete studentOrder.customer_email;
-      return reply({ order: studentOrder }, 201);
+      if (!await orderDb.insertOrder(saved)) {
+        // The same order arrived twice at the same moment (a retry): answer with the one that was saved.
+        const already = await orderDb.getOrder(saved.id);
+        if (already && already.pickup_code === saved.pickup_code && already.customer_user_id === customer.user_id) return reply({ order: forStudent(already), duplicate: true });
+        return reply({ error: "This order reference is already in use." }, 409);
+      }
+      return reply({ order: forStudent(saved) }, 201);
+    }
+
+    if (body.action === "cancel-order") {
+      // A signed-in student or teacher cancels their OWN order, only while the canteen hasn't accepted it.
+      const customer = await customerAuth.customerFromRequest(request);
+      if (typeof body.order_id !== "string" || !body.order_id || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || order.customer_user_id !== customer.user_id) return reply({ error: "Order not found." }, 404);
+      if (order.status === "CANCELLED") return reply({ order: forStudent(order), duplicate: true });
+      const tooLate = "The canteen has already accepted this order, so it can no longer be cancelled. Please speak to the counter.";
+      if (order.status !== "SUBMITTED") return reply({ error: tooLate }, 409);
+      if (order.payment_status === "PAID") return reply({ error: "This order has already been paid at the cash desk. Please speak to the counter to cancel it." }, 409);
+      const cancelled = { ...order, status: "CANCELLED", cancelled_at: new Date().toISOString(), cancelled_by: "customer" };
+      // Only saves if the order is STILL "submitted": if the kitchen accepted it a moment ago, the kitchen wins.
+      const saved = await orderDb.updateOrder(cancelled, { expectedStatus: "SUBMITTED" });
+      if (saved) return reply({ order: forStudent(saved) });
+      const current = await orderDb.getOrder(order.id);
+      if (current?.status === "CANCELLED") return reply({ order: forStudent(current), duplicate: true });
+      return reply({ error: tooLate }, 409);
     }
 
     if (body.action === "create-counter-order") {
@@ -420,7 +557,7 @@ export default async (request) => {
       if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to place an in-person order." }, 401);
       const order = body.order;
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
-      const existingOrder = await readJSON(`queue/${order.id}`) || await readJSON(`history/${order.id}`);
+      const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) return reply({ order: existingOrder, duplicate: true });
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead." }, 400);
@@ -431,12 +568,12 @@ export default async (request) => {
       if (customerType !== "STUDENT" && customerType !== "TEACHER") return reply({ error: "Choose whether the order is for a student or teacher." }, 400);
       if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId ?? "")) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (customerType === "TEACHER" && (!customerName || customerName.length > 100)) return reply({ error: "Enter the teacher’s name (up to 100 characters)." }, 400);
-      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
+      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
       const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, order.mode);
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
       const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
-      await store.setJSON(`queue/${saved.id}`, saved);
+      if (!await orderDb.insertOrder(saved)) return reply({ order: await orderDb.getOrder(saved.id), duplicate: true });
       return reply({ order: saved }, 201);
     }
 
@@ -490,14 +627,13 @@ export default async (request) => {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
       const orderId = String(body.order_id ?? "");
-      const key = `queue/${orderId}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "Order not found." }, 404);
+      const order = orderId && orderId.length <= 80 ? await orderDb.getOrder(orderId) : null;
+      if (!order || order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
+      if (order.status === "CANCELLED") return reply({ error: "This order was cancelled by the customer." }, 409);
       if (order.payment_method !== "cash") return reply({ error: "This order is not marked for cash payment." }, 409);
       if (order.payment_status === "PAID") return reply({ order, duplicate: true });
       const updated = { ...order, payment_status: "PAID", cash_received_at: new Date().toISOString(), cash_received_by: request.headers.get("x-canteen-username") || "cashier" };
-      await store.setJSON(key, updated);
-      return reply({ order: updated });
+      return reply({ order: await orderDb.updateOrder(updated) ?? updated });
     }
 
     if (!await managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
@@ -598,11 +734,10 @@ export default async (request) => {
       if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to delete a new order." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
-      const key = `queue/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "Order is no longer in the active queue." }, 404);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || order.status === "COLLECTED" || order.status === "CANCELLED") return reply({ error: "Order is no longer in the active queue." }, 404);
       if (order.status !== "SUBMITTED") return reply({ error: "Only new, unaccepted orders can be deleted." }, 409);
-      await store.delete(key);
+      await orderDb.deleteOrder(body.order_id);
       return reply({ deleted: true, order_id: body.order_id });
     }
 
@@ -610,10 +745,9 @@ export default async (request) => {
       if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to delete an order from history." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
-      const key = `history/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "This order is no longer in order history." }, 404);
-      await store.delete(key);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || (order.status !== "COLLECTED" && order.status !== "CANCELLED")) return reply({ error: "This order is no longer in order history." }, 404);
+      await orderDb.deleteOrder(body.order_id);
       return reply({ deleted: true, order_id: body.order_id });
     }
 
@@ -621,9 +755,8 @@ export default async (request) => {
       if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to refund an order." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
-      const key = `history/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) return reply({ error: "This completed order is no longer in order history." }, 404);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order || order.status !== "COLLECTED") return reply({ error: "This completed order is no longer in order history." }, 404);
       if (order.refund_status === "REFUNDED") return reply({ order, duplicate: true });
       const method = String(order.payment_method ?? "cash").trim().toLowerCase();
       const amount = orderTotalPaisa(order);
@@ -644,36 +777,34 @@ export default async (request) => {
         return reply({ error: "No payment has been recorded for this order. Unpaid orders cannot be refunded." }, 409);
       }
       const updated = { ...order, refund_status: "REFUNDED", refund_method: method === "wallet" ? "wallet" : "manual", refunded_at: new Date().toISOString(), refunded_by: request.headers.get("x-canteen-username") || "manager", refund_amount_paisa: amount };
-      await store.setJSON(key, updated);
-      return reply({ order: updated });
+      return reply({ order: await orderDb.updateOrder(updated) ?? updated });
     }
 
     if (body.action === "set-status") {
       if (typeof body.order_id !== "string" || typeof body.status !== "string") return reply({ error: "Order status details are invalid." }, 400);
-      const key = `queue/${body.order_id}`;
-      const order = await readJSON(key);
-      if (!order) {
-        const completed = await readJSON(`history/${body.order_id}`);
-        if (completed && body.status === "COLLECTED") return reply({ order: completed, duplicate: true });
-        return reply({ error: "Order not found." }, 404);
-      }
+      if (body.order_id.length > 80) return reply({ error: "Order not found." }, 404);
+      const order = await orderDb.getOrder(body.order_id);
+      if (!order) return reply({ error: "Order not found." }, 404);
       if (order.status === body.status) return reply({ order, duplicate: true });
+      if (order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
+      if (order.status === "CANCELLED") return reply({ error: "This order was cancelled by the customer." }, 409);
       if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
-      const updated = { ...order, status: body.status };
-      if (body.status === "COLLECTED") {
-        const completed = { ...updated, completed_at: new Date().toISOString() };
-        await store.setJSON(`history/${order.id}`, completed);
-        await store.delete(key);
-        return reply({ order: completed });
-      }
-      else await store.setJSON(key, updated);
-      return reply({ order: updated });
+      const updated = body.status === "COLLECTED"
+        ? { ...order, status: body.status, completed_at: new Date().toISOString() }
+        : { ...order, status: body.status };
+      // Only saves if no other screen moved this order on in the meantime.
+      const saved = await orderDb.updateOrder(updated, { expectedStatus: order.status });
+      if (saved) return reply({ order: saved });
+      const current = await orderDb.getOrder(body.order_id);
+      if (current?.status === body.status) return reply({ order: current, duplicate: true });
+      return reply({ error: "This order was just changed on another screen. Refresh and try again." }, 409);
     }
 
     return reply({ error: "Unknown action." }, 400);
   } catch (error) {
     if (error instanceof menuStore.MenuStoreError) return reply({ error: error.message }, error.status);
     if (error instanceof customerAuth.CustomerAuthError) return reply({ error: error.message }, error.status);
+    if (error instanceof orderStore.OrderStoreError) return reply({ error: error.message }, error.status);
     console.error("CedarBite shared data request failed", { operation, error });
     const message = operation === "add-menu-item"
       ? "The menu item could not be saved. Refresh the menu and try again."

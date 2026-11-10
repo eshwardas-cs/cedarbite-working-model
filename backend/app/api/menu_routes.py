@@ -23,6 +23,12 @@ class CategoryIn(BaseModel):
     sort_order: int = Field(default=0, ge=-1000, le=1000)
 
 
+class MenuOptionIn(BaseModel):
+    id: str | None = Field(default=None, max_length=36)
+    name: str = Field(min_length=1, max_length=80)
+    available: bool = True
+
+
 class ItemIn(BaseModel):
     category_id: int
     name: str = Field(min_length=1, max_length=120)
@@ -31,6 +37,7 @@ class ItemIn(BaseModel):
     price_paisa: int = Field(ge=0, le=10_000_000)
     addon_name: str | None = Field(default=None, max_length=80)
     addon_price_paisa: int = Field(default=0, ge=0, le=10_000_000)
+    options: list["MenuOptionIn"] = Field(default_factory=list, max_length=25)
     quick_allowed: bool = False
     scheduled_allowed: bool = True
     prep_minutes: int | None = Field(default=None, ge=0, le=240)
@@ -50,6 +57,7 @@ class ItemPatch(BaseModel):
     price_paisa: int | None = Field(default=None, ge=0, le=10_000_000)
     addon_name: str | None = Field(default=None, max_length=80)
     addon_price_paisa: int | None = Field(default=None, ge=0, le=10_000_000)
+    options: list["MenuOptionIn"] | None = Field(default=None, max_length=25)
     quick_allowed: bool | None = None
     scheduled_allowed: bool | None = None
     prep_minutes: int | None = Field(default=None, ge=0, le=240)
