@@ -97,6 +97,9 @@ The publishable key is meant to be public. Security comes from the database rule
   the order; the Netlify function (`frontend/shared/customer-auth.mjs`) asks Supabase whose token it is and
   reads their profile with the secret key. The student ID saved on the order comes from that profile, never
   from the browser. An order without a valid sign-in is refused and nothing is saved.
+- **My orders:** each online order is also listed under `customers/<user id>` in Netlify storage. The
+  `?scope=my-orders` request needs the same sign-in token and returns only that person's orders (refreshed
+  every 10 seconds on the My orders page). Orders placed before this change are not on anyone's list.
 - **Wallet payment is switched off** until the wallet moves to Supabase: nothing can check a balance yet, so
   the server refuses `wallet` orders instead of marking them paid, and checkout no longer offers it.
 - Netlify storage no longer holds any menu data. Deals are still stored there for now, checked against

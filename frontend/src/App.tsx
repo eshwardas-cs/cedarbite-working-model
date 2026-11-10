@@ -528,6 +528,16 @@ export default function App() {
     try { const result = await request<{ orders: Order[] }>("/api/orders"); setOrders(result.orders); }
     catch (error) { setToast(error instanceof Error ? error.message : "Orders unavailable."); }
   }, [request]);
+  const loadMyOrders = useCallback(async () => {
+    // Google (Supabase) users: the server returns only the signed-in person's own orders.
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) return;
+    try {
+      const result = await request<{ orders: Order[] }>(`${SHARED_DATA_URL}?scope=my-orders`, { cache: "no-store", headers: { Authorization: `Bearer ${token}` } });
+      if (Array.isArray(result.orders)) setOrders(result.orders);
+    } catch { /* Keep the orders already on screen; the next refresh tries again. */ }
+  }, [request]);
   const loadWallet = useCallback(async () => {
     if (user?.role === "DEMO_STUDENT") {
       try {
@@ -616,15 +626,23 @@ export default function App() {
   }, [availablePickupWindows, selectedWindow]);
 
   useEffect(() => {
-    // Supabase users: only the menu is on Supabase so far (orders and wallet come in later steps).
-    if (user?.source === "supabase") { void loadMenu(); return; }
+    // Supabase users: menu from Supabase, their own orders from the server (the wallet comes in a later step).
+    if (user?.source === "supabase") { void loadMenu(); void loadMyOrders(); return; }
     if (user?.role === "DEMO_CANTEEN") { void loadMenu(true); void loadQueue(); void loadSharedAvailability(); return; }
     if (user?.role === "DEMO_STUDENT") { setOrders(loadDemoOrders(user.email, user.student_id)); void loadMenu(); void loadWallet(); return; }
     if (user?.permissions.includes("queue.view")) void loadQueue();
     if (user?.permissions.includes("orders.view_own")) void loadOrders();
     if (user?.role === "student" || user?.role === "staff_customer") void loadWallet();
     void loadMenu(Boolean(user?.permissions.includes("menu.manage") || user?.permissions.includes("availability.toggle")));
-  }, [user, page, loadMenu, loadOrders, loadQueue, loadWallet]);
+  }, [user, page, loadMenu, loadMyOrders, loadOrders, loadQueue, loadWallet]);
+  useEffect(() => {
+    // Keep a Google user's order progress up to date while they look at "My orders".
+    if (page !== "orders" || user?.source !== "supabase") return;
+    const refresh = () => { if (!document.hidden) void loadMyOrders(); };
+    const timer = window.setInterval(refresh, 10_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, [loadMyOrders, page, user?.source]);
   useEffect(() => { storageSet("local", "cedarbite-preview-deals", JSON.stringify(deals)); }, [deals]);
   useEffect(() => {
     void request<{ deals: Deal[] | null }>(`${SHARED_DATA_URL}?scope=deals`, { cache: "no-store" }).then((result) => {
@@ -661,7 +679,7 @@ export default function App() {
   const canManage = user?.permissions.includes("menu.manage") ?? false;
   const canToggle = user?.permissions.includes("availability.toggle") ?? false;
   const canQueue = user?.permissions.includes("queue.view") ?? false;
-  const canSeeOrders = user?.permissions.includes("orders.view_own") ?? false;
+  const canSeeOrders = user?.source === "supabase" || (user?.permissions.includes("orders.view_own") ?? false);
   const items = useMemo(() => categories.flatMap((category) => category.items.map((item) => ({ ...item, category: category.name }))), [categories]);
   const menuReady = menuLoadedRole === (user?.role ?? "anonymous");
   const modeCategories = categories.map((category) => ({ ...category, items: category.items.filter((item) => orderMode === "quick" ? item.quick_allowed : item.scheduled_allowed) }));
@@ -701,6 +719,7 @@ export default function App() {
       window.setTimeout(() => {
         void userFromSession(session).then((signedIn) => {
           setUser(signedIn);
+          if (!signedIn) setOrders([]);
           setCsrf("");
           if (signedIn) loginDialog.current?.close();
         });
@@ -769,7 +788,7 @@ export default function App() {
   }
   async function signOut() {
     if (user?.source === "supabase") {
-      try { await signOutOfSupabase(); setUser(null); setCsrf(""); setToast("You are signed out."); }
+      try { await signOutOfSupabase(); setUser(null); setOrders([]); setCsrf(""); setToast("You are signed out."); }
       catch (error) { setToast(error instanceof Error ? error.message : "Sign out failed."); }
       return;
     }

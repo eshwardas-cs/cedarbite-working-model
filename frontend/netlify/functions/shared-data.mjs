@@ -152,6 +152,16 @@ const managerConfigured = async () => staffConfigured("order_manager");
 const isManager = async (request) => isStaff(request, "order_manager");
 const stationLabel = { order_manager: "order control", order_taker: "counter orders", cashier: "cash desk", kitchen: "kitchen monitor" };
 
+// What a student's own browser may see of an order (no other people's details, no internal IDs).
+function forStudent(order) {
+  const studentOrder = { ...order };
+  delete studentOrder.student_id;
+  delete studentOrder.customer_user_id;
+  delete studentOrder.customer_email;
+  return studentOrder;
+}
+const MAX_ORDERS_PER_CUSTOMER = 100;
+
 async function readByPrefix(prefix) {
   const { blobs } = await listBlobs(prefix);
   const records = await Promise.all(blobs.map(({ key }) => readJSON(key).catch((error) => {
@@ -204,11 +214,19 @@ export default async (request) => {
         if (!/^[a-f0-9-]{36}$/i.test(id) || !/^CB[A-F0-9]{6}$/.test(pickupCode)) return reply({ error: "Order details are invalid." }, 400);
         const order = await readJSON(`queue/${id}`) || await readJSON(`history/${id}`);
         if (!order || order.pickup_code !== pickupCode) return reply({ order: null });
-        const studentOrder = { ...order };
-        delete studentOrder.student_id;
-        delete studentOrder.customer_user_id;
-        delete studentOrder.customer_email;
-        return reply({ order: studentOrder });
+        return reply({ order: forStudent(order) });
+      }
+      if (url.searchParams.get("scope") === "my-orders") {
+        // Only the signed-in person's own orders, found through their order list (customers/<user id>).
+        const customer = await customerAuth.customerFromRequest(request);
+        const list = await readJSON(`customers/${customer.user_id}`);
+        const ids = Array.isArray(list?.order_ids) ? list.order_ids.slice(0, MAX_ORDERS_PER_CUSTOMER) : [];
+        const found = await Promise.all(ids.map(async (id) => await readJSON(`queue/${id}`) || await readJSON(`history/${id}`)));
+        const orders = found
+          .filter((order) => order && order.customer_user_id === customer.user_id)
+          .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+          .map(forStudent);
+        return reply({ orders });
       }
       if (url.searchParams.get("scope") === "ordering-status") {
         const settings = await readJSON("settings/ordering") || { paused: false };
@@ -340,11 +358,7 @@ export default async (request) => {
       const existingOrder = await readJSON(`queue/${order.id}`) || await readJSON(`history/${order.id}`);
       if (existingOrder) {
         if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.customer_user_id ?? "") !== customer.user_id) return reply({ error: "This order reference is already in use." }, 409);
-        const studentOrder = { ...existingOrder };
-        delete studentOrder.student_id;
-        delete studentOrder.customer_user_id;
-        delete studentOrder.customer_email;
-        return reply({ order: studentOrder, duplicate: true });
+        return reply({ order: forStudent(existingOrder), duplicate: true });
       }
       // The wallet is not built yet, so nothing can check a balance. Refuse it rather than mark an order PAID for free.
       if (order.payment_method === "wallet") return reply({ error: "The CedarBite wallet isn't available yet. Choose another payment method." }, 400);
@@ -408,11 +422,12 @@ export default async (request) => {
         payment_status: order.payment_method === "easypaisa" || order.payment_method === "jazzcash" || order.payment_method === "bank" || order.payment_method === "card" ? "PENDING" : "UNPAID",
       };
       await store.setJSON(`queue/${saved.id}`, saved);
-      const studentOrder = { ...saved };
-      delete studentOrder.student_id;
-      delete studentOrder.customer_user_id;
-      delete studentOrder.customer_email;
-      return reply({ order: studentOrder }, 201);
+      // Remember this order on the person's own list, so "My orders" can find it later.
+      const customerKey = `customers/${customer.user_id}`;
+      const customerList = await readJSON(customerKey);
+      const previousIds = Array.isArray(customerList?.order_ids) ? customerList.order_ids.filter((id) => id !== saved.id) : [];
+      await store.setJSON(customerKey, { order_ids: [saved.id, ...previousIds].slice(0, MAX_ORDERS_PER_CUSTOMER) });
+      return reply({ order: forStudent(saved) }, 201);
     }
 
     if (body.action === "create-counter-order") {

@@ -168,3 +168,43 @@ describe("online orders need a Cedar sign-in", () => {
     expect((await post(body)).status).toBe(409);
   });
 });
+
+describe("My orders for Google users", () => {
+  const myOrders = () => sharedData(new Request(`${ENDPOINT}?scope=my-orders`, { headers: { Authorization: "Bearer t" } }));
+  const order = (id, code) => ({ action: "create-order", order: { id, pickup_code: code, mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
+  const OTHER = { ...customer.student, user_id: "6b1f3c1e-0000-4000-8000-000000000002", email: "7654321@cedar.edu.pk", student_id: "7654321" };
+
+  it("refuses without a sign-in", async () => {
+    customer.customerFromRequest.mockRejectedValueOnce(new customer.CustomerAuthError("Sign in with your Cedar Google account to place an order."));
+    expect((await myOrders()).status).toBe(401);
+  });
+
+  it("shows each person only their own orders, newest first, without private fields", async () => {
+    expect((await post(order("11111111-1111-4111-8111-111111111111", "CB111111"))).status).toBe(201);
+    customer.customerFromRequest.mockResolvedValueOnce(OTHER);
+    expect((await post(order("22222222-2222-4222-8222-222222222222", "CB222222"))).status).toBe(201);
+    expect((await post(order("33333333-3333-4333-8333-333333333333", "CB333333"))).status).toBe(201);
+
+    const { orders } = await (await myOrders()).json();
+    expect(orders.map((o) => o.pickup_code).sort()).toEqual(["CB111111", "CB333333"]);
+    for (const o of orders) {
+      expect(o).not.toHaveProperty("student_id");
+      expect(o).not.toHaveProperty("customer_email");
+      expect(o).not.toHaveProperty("customer_user_id");
+    }
+
+    customer.customerFromRequest.mockResolvedValueOnce(OTHER);
+    const other = await (await myOrders()).json();
+    expect(other.orders.map((o) => o.pickup_code)).toEqual(["CB222222"]);
+  });
+
+  it("still finds an order after the canteen moves it to history", async () => {
+    const id = "44444444-4444-4444-8444-444444444444";
+    await post(order(id, "CB444444"));
+    const saved = mockStore.values.get(`queue/${id}`);
+    mockStore.values.delete(`queue/${id}`);
+    mockStore.values.set(`history/${id}`, { ...saved, status: "COLLECTED" });
+    const { orders } = await (await myOrders()).json();
+    expect(orders).toEqual([expect.objectContaining({ pickup_code: "CB444444", status: "COLLECTED" })]);
+  });
+});
