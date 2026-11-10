@@ -22,6 +22,11 @@ function validReportDay(value) {
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
+function validReportMonth(value) {
+  if (typeof value !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) return false;
+  const [year, month] = value.split("-").map(Number);
+  return year >= 2000 && year <= 9999 && month >= 1 && month <= 12;
+}
 function orderTotalPaisa(order) {
   if (Number.isSafeInteger(order.total_paisa) && order.total_paisa >= 0) return order.total_paisa;
   const match = String(order.total_display ?? "").match(/([\d,]+)(?:\.([\d]{1,2}))?/);
@@ -68,6 +73,64 @@ function dailySalesSummary(date, orders) {
     items_sold: [...itemCounts.values()].sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name)),
     payment_methods: [...methods.values()].sort((a, b) => b.amount_paisa - a.amount_paisa),
     hourly_sales: [...hourly.entries()].map(([hour, amount_paisa]) => ({ hour, amount_paisa })).sort((a, b) => a.hour - b.hour),
+  };
+}
+function monthlySalesSummary(month, orders) {
+  const unique = [...new Map(orders.filter((order) => order?.id != null).map((order) => [String(order.id), order])).values()];
+  const dayCount = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+  const itemCounts = new Map();
+  const methods = new Map();
+  const daily = [];
+  let ordersPlaced = 0;
+  let placedOrderValuePaisa = 0;
+  let pendingPaymentOrders = 0;
+  let paidOrders = 0;
+  let paidSalesPaisa = 0;
+  let unitsSold = 0;
+  let refunds = 0;
+  let refundsPaisa = 0;
+  for (let day = 1; day <= dayCount; day += 1) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const report = dailySalesSummary(date, unique);
+    if (report.orders_placed || report.paid_orders) daily.push({ date, orders_placed: report.orders_placed, paid_orders: report.paid_orders, paid_sales_paisa: report.paid_sales_paisa, units_sold: report.units_sold, pending_payment_orders: report.pending_payment_orders });
+    ordersPlaced += report.orders_placed;
+    placedOrderValuePaisa += report.placed_order_value_paisa;
+    pendingPaymentOrders += report.pending_payment_orders;
+    paidOrders += report.paid_orders;
+    paidSalesPaisa += report.paid_sales_paisa;
+    unitsSold += report.units_sold;
+    for (const item of report.items_sold) {
+      const entry = itemCounts.get(item.name) || { name: item.name, quantity: 0 };
+      entry.quantity += item.quantity;
+      itemCounts.set(item.name, entry);
+    }
+    for (const method of report.payment_methods) {
+      const entry = methods.get(method.method) || { method: method.method, count: 0, amount_paisa: 0 };
+      entry.count += method.count;
+      entry.amount_paisa += method.amount_paisa;
+      methods.set(method.method, entry);
+    }
+  }
+  for (const order of unique) {
+    if (order.refund_status !== "REFUNDED" || orderDay(order.refunded_at) !== month.slice(0, 7)) continue;
+    refunds += 1;
+    refundsPaisa += orderTotalPaisa(order);
+  }
+  return {
+    month,
+    generated_at: new Date().toISOString(),
+    orders_placed: ordersPlaced,
+    placed_order_value_paisa: placedOrderValuePaisa,
+    pending_payment_orders: pendingPaymentOrders,
+    paid_orders: paidOrders,
+    paid_sales_paisa: paidSalesPaisa,
+    refunds,
+    refunds_paisa: refundsPaisa,
+    net_sales_paisa: paidSalesPaisa - refundsPaisa,
+    units_sold: unitsSold,
+    items_sold: [...itemCounts.values()].sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name)),
+    payment_methods: [...methods.values()].sort((a, b) => b.amount_paisa - a.amount_paisa),
+    daily_breakdown: daily,
   };
 }
 function safeEqual(left, right) {
@@ -274,7 +337,7 @@ export default async (request) => {
         if (!id || id.length > 80) return reply({ error: "Order ID is invalid." }, 400);
         return reply({ order: await orderDb.getOrder(id) });
       }
-      if (["sales-dates", "sales-summary"].includes(url.searchParams.get("scope"))) {
+      if (["sales-dates", "sales-summary", "sales-months", "sales-month"].includes(url.searchParams.get("scope"))) {
         if (!await staffConfigured("order_manager")) return reply({ error: "The order manager login is not configured yet." }, 503);
         if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to the order manager station to view sales summaries." }, 401);
         const today = reportDayKey(new Date());
@@ -293,6 +356,27 @@ export default async (request) => {
             }
           }
           return reply({ dates: [...dates].filter((date) => validReportDay(date) && date <= today && !removedDates.has(date)).sort((a, b) => b.localeCompare(a)) });
+        }
+        if (url.searchParams.get("scope") === "sales-months") {
+          const months = new Set([today.slice(0, 7)]);
+          for (const order of allOrders) {
+            const createdDate = orderDay(order.created_at);
+            if (createdDate) months.add(createdDate.slice(0, 7));
+            if (order.payment_status === "PAID") {
+              const paidDate = orderDay(order.cash_received_at || order.paid_at || order.created_at);
+              if (paidDate) months.add(paidDate.slice(0, 7));
+            }
+            if (order.refund_status === "REFUNDED") {
+              const refundDate = orderDay(order.refunded_at);
+              if (refundDate) months.add(refundDate.slice(0, 7));
+            }
+          }
+          return reply({ months: [...months].filter((month) => validReportMonth(month) && month <= today.slice(0, 7)).sort((a, b) => b.localeCompare(a)) });
+        }
+        if (url.searchParams.get("scope") === "sales-month") {
+          const month = url.searchParams.get("month");
+          if (!validReportMonth(month) || month > today.slice(0, 7)) return reply({ error: "Choose a valid sales month up to the current month." }, 400);
+          return reply({ report: monthlySalesSummary(month, allOrders) });
         }
         const date = url.searchParams.get("date");
         if (!validReportDay(date) || date > today) return reply({ error: "Choose a valid report date up to today." }, 400);
