@@ -1,6 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import * as menuStore from "../../shared/menu-store.mjs";
+import * as customerAuth from "../../shared/customer-auth.mjs";
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
@@ -205,6 +206,8 @@ export default async (request) => {
         if (!order || order.pickup_code !== pickupCode) return reply({ order: null });
         const studentOrder = { ...order };
         delete studentOrder.student_id;
+        delete studentOrder.customer_user_id;
+        delete studentOrder.customer_email;
         return reply({ order: studentOrder });
       }
       if (url.searchParams.get("scope") === "ordering-status") {
@@ -332,19 +335,24 @@ export default async (request) => {
     if (body.action === "create-order") {
       const order = body.order;
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
+      // Who is ordering comes from their Supabase (Google) sign-in, never from the browser's order details.
+      const customer = await customerAuth.customerFromRequest(request);
       const existingOrder = await readJSON(`queue/${order.id}`) || await readJSON(`history/${order.id}`);
       if (existingOrder) {
-        if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.student_id ?? "") !== String(order.student_id ?? "")) return reply({ error: "This order reference is already in use." }, 409);
+        if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.customer_user_id ?? "") !== customer.user_id) return reply({ error: "This order reference is already in use." }, 409);
         const studentOrder = { ...existingOrder };
         delete studentOrder.student_id;
+        delete studentOrder.customer_user_id;
+        delete studentOrder.customer_email;
         return reply({ order: studentOrder, duplicate: true });
       }
+      // The wallet is not built yet, so nothing can check a balance. Refuse it rather than mark an order PAID for free.
+      if (order.payment_method === "wallet") return reply({ error: "The CedarBite wallet isn't available yet. Choose another payment method." }, 400);
       const orderingSettings = await readJSON("settings/ordering");
       if (orderingSettings?.paused === true) return reply({ error: "We are currently not accepting orders." }, 409);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
-      if (order.student_id != null && !/^\d{7}$/.test(String(order.student_id))) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
       const catalog = await menuStore.readCatalog();
       const menuItemsById = new Map(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item]));
@@ -392,14 +400,18 @@ export default async (request) => {
         pickup_window: order.pickup_window && typeof order.pickup_window === "object" ? order.pickup_window : null,
         items: pricedOrder.items,
         waiting_minutes: 0,
-        student_id: order.student_id == null ? null : String(order.student_id),
+        student_id: customer.student_id,
+        customer_user_id: customer.user_id,
+        customer_email: customer.email,
         source: "ONLINE",
-        payment_method: ["cash", "wallet", "easypaisa", "jazzcash", "bank", "card"].includes(order.payment_method) ? order.payment_method : "cash",
-        payment_status: order.payment_method === "wallet" ? "PAID" : order.payment_method === "cash" ? "UNPAID" : "PENDING",
+        payment_method: ["cash", "easypaisa", "jazzcash", "bank", "card"].includes(order.payment_method) ? order.payment_method : "cash",
+        payment_status: order.payment_method === "easypaisa" || order.payment_method === "jazzcash" || order.payment_method === "bank" || order.payment_method === "card" ? "PENDING" : "UNPAID",
       };
       await store.setJSON(`queue/${saved.id}`, saved);
       const studentOrder = { ...saved };
       delete studentOrder.student_id;
+      delete studentOrder.customer_user_id;
+      delete studentOrder.customer_email;
       return reply({ order: studentOrder }, 201);
     }
 
@@ -661,6 +673,7 @@ export default async (request) => {
     return reply({ error: "Unknown action." }, 400);
   } catch (error) {
     if (error instanceof menuStore.MenuStoreError) return reply({ error: error.message }, error.status);
+    if (error instanceof customerAuth.CustomerAuthError) return reply({ error: error.message }, error.status);
     console.error("CedarBite shared data request failed", { operation, error });
     const message = operation === "add-menu-item"
       ? "The menu item could not be saved. Refresh the menu and try again."

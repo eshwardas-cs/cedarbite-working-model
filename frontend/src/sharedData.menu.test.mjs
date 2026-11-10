@@ -38,6 +38,14 @@ const menu = vi.hoisted(() => {
 });
 vi.mock("../shared/menu-store.mjs", () => menu);
 
+// Who is ordering: by default a signed-in student. Tests can make the sign-in check fail.
+const customer = vi.hoisted(() => {
+  class CustomerAuthError extends Error { constructor(message, status = 401) { super(message); this.status = status; } }
+  const student = { user_id: "6b1f3c1e-0000-4000-8000-000000000001", email: "1234567@cedar.edu.pk", role: "student", student_id: "1234567" };
+  return { CustomerAuthError, student, customerFromRequest: vi.fn(async () => student) };
+});
+vi.mock("../shared/customer-auth.mjs", () => customer);
+
 import sharedData from "../netlify/functions/shared-data.mjs";
 
 const ENDPOINT = "https://cedarbite.test/.netlify/functions/shared-data";
@@ -53,6 +61,7 @@ beforeEach(() => {
   process.env.CANTEEN_DASHBOARD_PASSWORD = "manager-test-password";
   mockStore.values.clear();
   mockStore.setJSON.mockClear();
+  customer.customerFromRequest.mockClear();
   for (const fn of ["readCatalog", "setAvailability", "setPrice", "removeItem", "addItem", "updateItem", "addCategory", "removeCategory", "reorderMenu"]) menu[fn].mockClear();
 });
 
@@ -121,5 +130,41 @@ describe("menu reads and order prices come from Supabase", () => {
     const response = await post(studentOrder([{ item_id: 2, name: "Wonton", quantity: 1 }]));
     expect(response.status).toBe(409);
     expect(mockStore.setJSON).not.toHaveBeenCalled();
+  });
+});
+
+describe("online orders need a Cedar sign-in", () => {
+  it("refuses an order when the sign-in check fails, and saves nothing", async () => {
+    customer.customerFromRequest.mockRejectedValueOnce(new customer.CustomerAuthError("Sign in with your Cedar Google account to place an order."));
+    const response = await post(studentOrder([{ item_id: 1, name: "Samosa", quantity: 1 }]));
+    expect(response.status).toBe(401);
+    expect(mockStore.setJSON).not.toHaveBeenCalled();
+  });
+
+  it("takes the student ID from the sign-in, not from the browser", async () => {
+    const body = studentOrder([{ item_id: 1, name: "Samosa", quantity: 1 }]);
+    body.order.student_id = "7654321";
+    const response = await post(body);
+    expect(response.status).toBe(201);
+    const saved = mockStore.values.get(`queue/${body.order.id}`);
+    expect(saved).toMatchObject({ student_id: "1234567", customer_user_id: customer.student.user_id, customer_email: "1234567@cedar.edu.pk" });
+    const { order } = await response.json();
+    expect(order).not.toHaveProperty("student_id");
+    expect(order).not.toHaveProperty("customer_email");
+  });
+
+  it("refuses the wallet (nothing can check a balance yet) instead of marking the order paid", async () => {
+    const body = studentOrder([{ item_id: 1, name: "Samosa", quantity: 1 }]);
+    body.order.payment_method = "wallet";
+    const response = await post(body);
+    expect(response.status).toBe(400);
+    expect(mockStore.setJSON).not.toHaveBeenCalled();
+  });
+
+  it("does not let another account reuse someone else's order reference", async () => {
+    const body = studentOrder([{ item_id: 1, name: "Samosa", quantity: 1 }]);
+    expect((await post(body)).status).toBe(201);
+    customer.customerFromRequest.mockResolvedValueOnce({ ...customer.student, user_id: "6b1f3c1e-0000-4000-8000-000000000002" });
+    expect((await post(body)).status).toBe(409);
   });
 });

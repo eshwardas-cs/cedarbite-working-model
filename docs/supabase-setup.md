@@ -93,6 +93,12 @@ The publishable key is meant to be public. Security comes from the database rule
 - **Staff** change it through the station screens. The browser sends one small change (sold out, one
   price, one item, one category, or the new order) to the Netlify function, which saves it to Supabase.
 - **Orders** are priced by the Netlify function from the Supabase menu, never from the browser's price.
+- **Online orders need a Cedar Google sign-in.** The browser sends the person's Supabase sign-in token with
+  the order; the Netlify function (`frontend/shared/customer-auth.mjs`) asks Supabase whose token it is and
+  reads their profile with the secret key. The student ID saved on the order comes from that profile, never
+  from the browser. An order without a valid sign-in is refused and nothing is saved.
+- **Wallet payment is switched off** until the wallet moves to Supabase: nothing can check a balance yet, so
+  the server refuses `wallet` orders instead of marking them paid, and checkout no longer offers it.
 - Netlify storage no longer holds any menu data. Deals are still stored there for now, checked against
   the Supabase menu.
 
