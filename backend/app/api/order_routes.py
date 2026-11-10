@@ -30,6 +30,7 @@ class LineIn(BaseModel):
     item_id: int
     quantity: int
     addon_selected: bool = False
+    option_id: str | None = Field(default=None, max_length=36)
 
 
 class QuoteIn(BaseModel):
@@ -56,7 +57,7 @@ class WindowIn(BaseModel):
 
 
 def _lines(body: QuoteIn) -> list[service.Line]:
-    return [service.Line(l.item_id, l.quantity, l.addon_selected) for l in body.lines]
+    return [service.Line(l.item_id, l.quantity, l.addon_selected, l.option_id) for l in body.lines]
 
 
 @router.get("/ordering/status")

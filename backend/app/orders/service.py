@@ -45,6 +45,7 @@ class Line:
     item_id: int
     quantity: int
     addon_selected: bool = False
+    option_id: str | None = None
 
 
 @dataclass
@@ -54,6 +55,7 @@ class QuoteLine:
     unit_price_paisa: int
     quantity: int
     line_total_paisa: int
+    option_id: str | None = None
 
 
 @dataclass
@@ -148,7 +150,7 @@ def price_cart(db: Session, lines: list[Line]) -> Quote:
         problems.append("Your cart is empty.")
     if len(lines) > MAX_LINES:
         problems.append(f"A single order can have at most {MAX_LINES} different items.")
-    keys = [(l.item_id, l.addon_selected) for l in lines]
+    keys = [(l.item_id, l.addon_selected, l.option_id) for l in lines]
     if len(set(keys)) != len(keys):
         problems.append("Each menu item choice can appear only once; change its quantity instead.")
     ids = [l.item_id for l in lines]
@@ -171,10 +173,26 @@ def price_cart(db: Session, lines: list[Line]) -> Quote:
         if l.addon_selected and not item.addon_name:
             problems.append(f"{item.name} no longer has that add-on available.")
             continue
+        option = None
+        if item.options:
+            option = next((choice for choice in item.options if choice.id == l.option_id), None)
+            if option is None:
+                problems.append(f"Choose an option for {item.name}.")
+                continue
+            if not option.is_available:
+                problems.append(f"{option.name} is out of stock.")
+                continue
+        elif l.option_id is not None:
+            problems.append(f"That option is no longer available for {item.name}.")
+            continue
         unit_price = item.price_paisa + (item.addon_price_paisa if l.addon_selected else 0)
-        line_name = f"{item.name} + {item.addon_name}" if l.addon_selected else item.name
+        line_name = item.name
+        if option is not None:
+            line_name = f"{line_name} · {option.name}"
+        if l.addon_selected:
+            line_name = f"{line_name} + {item.addon_name}"
         line_total = unit_price * l.quantity
-        q.lines.append(QuoteLine(item.id, line_name, unit_price, l.quantity, line_total))
+        q.lines.append(QuoteLine(item.id, line_name, unit_price, l.quantity, line_total, option.id if option else None))
         q.subtotal_paisa += line_total
     if total_qty > MAX_TOTAL_QTY:
         problems.append(f"A single order can have at most {MAX_TOTAL_QTY} items in total.")

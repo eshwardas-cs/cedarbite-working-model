@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.service import audit
 from app.core.money import format_pkr
-from app.models.menu import MenuCategory, MenuItem
+from app.models.menu import MenuCategory, MenuItem, MenuItemOption
 from app.models.user import User
 
 
@@ -16,7 +16,7 @@ class NotFound(MenuError):
 
 
 EDITABLE = {"category_id", "name", "description", "price_paisa", "quick_allowed",
-            "scheduled_allowed", "prep_minutes", "image_data", "addon_name", "addon_price_paisa"}
+            "scheduled_allowed", "prep_minutes", "image_data", "addon_name", "addon_price_paisa", "options"}
 
 
 def item_dict(i: MenuItem) -> dict:
@@ -25,7 +25,9 @@ def item_dict(i: MenuItem) -> dict:
             "available": bool(i.is_active and i.is_available), "is_active": i.is_active,
             "quick_allowed": i.quick_allowed, "scheduled_allowed": i.scheduled_allowed,
             "prep_minutes": i.prep_minutes, "addon_name": i.addon_name,
-            "addon_price_paisa": i.addon_price_paisa}
+            "addon_price_paisa": i.addon_price_paisa,
+            "options": [{"id": option.id, "name": option.name, "available": option.is_available}
+                        for option in i.options]}
 
 
 def list_menu(db: Session, include_inactive: bool = False) -> list[dict]:
@@ -61,7 +63,8 @@ def _check_modes(quick: bool, scheduled: bool) -> None:
 def create_item(db: Session, actor: User, *, category_id: int, name: str, description: str = "",
                 price_paisa: int, quick_allowed: bool = False, scheduled_allowed: bool = True,
                 prep_minutes: int | None = None, image_data: str | None = None,
-                addon_name: str | None = None, addon_price_paisa: int = 0) -> MenuItem:
+                addon_name: str | None = None, addon_price_paisa: int = 0,
+                options: list[dict] | None = None) -> MenuItem:
     if db.get(MenuCategory, category_id) is None:
         raise MenuError("Category not found.")
     name = name.strip()
@@ -70,6 +73,7 @@ def create_item(db: Session, actor: User, *, category_id: int, name: str, descri
     if price_paisa < 0 or addon_price_paisa < 0:
         raise MenuError("Prices cannot be negative.")
     _check_modes(quick_allowed, scheduled_allowed)
+    _validate_options(options or [])
     item = MenuItem(category_id=category_id, name=name, description=description.strip(),
                     image_data=image_data, price_paisa=price_paisa, quick_allowed=quick_allowed,
                     scheduled_allowed=scheduled_allowed, prep_minutes=prep_minutes,
@@ -77,6 +81,7 @@ def create_item(db: Session, actor: User, *, category_id: int, name: str, descri
                     addon_price_paisa=addon_price_paisa if addon_name and addon_name.strip() else 0)
     db.add(item)
     db.flush()
+    _replace_options(item, options or [])
     audit(db, actor.id, "menu.item_created", "menu_item", item.id, f"price_paisa={price_paisa}")
     db.commit()
     return item
@@ -103,15 +108,20 @@ def update_item(db: Session, actor: User, item_id: int, changes: dict) -> MenuIt
         raise MenuError("Price cannot be negative.")
     if changes.get("addon_price_paisa", 0) < 0:
         raise MenuError("Add-on price cannot be negative.")
+    if "options" in changes:
+        _validate_options(changes["options"] or [])
     _check_modes(changes.get("quick_allowed", item.quick_allowed),
                  changes.get("scheduled_allowed", item.scheduled_allowed))
     old_price = item.price_paisa
+    options = changes.pop("options", None) if "options" in changes else None
     for key, value in changes.items():
         setattr(item, key, value.strip() if isinstance(value, str) else value)
     if item.addon_name is not None and not item.addon_name.strip():
         item.addon_name = None
     if not item.addon_name:
         item.addon_price_paisa = 0
+    if options is not None:
+        _replace_options(item, options)
     if "name" in changes and not item.name:
         db.rollback()
         raise MenuError("Item name is required.")
@@ -122,6 +132,39 @@ def update_item(db: Session, actor: User, item_id: int, changes: dict) -> MenuIt
         audit(db, actor.id, "menu.item_updated", "menu_item", item.id, ", ".join(sorted(changes)))
     db.commit()
     return item
+
+
+def _validate_options(options: list[dict]) -> None:
+    if not isinstance(options, list) or len(options) > 25:
+        raise MenuError("An item can have at most 25 choices.")
+    names = set()
+    for option in options:
+        name = str(option.get("name", "")).strip()
+        if not name or len(name) > 80:
+            raise MenuError("Each choice needs a name of 1 to 80 characters.")
+        if name.casefold() in names:
+            raise MenuError("Choice names must be unique for this item.")
+        names.add(name.casefold())
+        if not isinstance(option.get("available", True), bool):
+            raise MenuError("Choice availability must be on or off.")
+
+
+def _replace_options(item: MenuItem, options: list[dict]) -> None:
+    from uuid import uuid4
+    existing = {option.id: option for option in item.options}
+    next_options = []
+    for index, value in enumerate(options):
+        option_id = value.get("id")
+        option = existing.pop(option_id, None) if option_id else None
+        if option is None:
+            option = MenuItemOption(id=uuid4().hex, name=value["name"].strip(),
+                                    is_available=value.get("available", True), sort_order=index)
+        else:
+            option.name = value["name"].strip()
+            option.is_available = value.get("available", True)
+            option.sort_order = index
+        next_options.append(option)
+    item.options = next_options
 
 
 def set_availability(db: Session, actor: User, item_id: int, is_available: bool) -> MenuItem:
