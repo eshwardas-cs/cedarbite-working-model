@@ -246,13 +246,23 @@ function priceSharedOrderLines(catalog, lines, mode) {
     if (mode === "QUICK" && !item.quick_allowed || mode === "SCHEDULED" && !item.scheduled_allowed && !item.quick_allowed) return { error: `${item.name} is not available for this order type.` };
     const addon_selected = line.addon_selected === true;
     if (addon_selected && !item.addon_name) return { error: `The optional extra for ${item.name} is no longer available. Refresh your bucket.` };
+    // Items with options need one chosen, in stock, and belonging to this item (an option never changes the price).
+    const itemOptions = Array.isArray(item.options) ? item.options : [];
+    let option = null;
+    if (itemOptions.length) {
+      option = itemOptions.find((choice) => choice.id === line.option_id) ?? null;
+      if (!option) return { error: `Choose an option for ${item.name}.` };
+      if (option.available === false) return { error: `${option.name} is out of stock. Choose another option for ${item.name}.` };
+    } else if (line.option_id != null) {
+      return { error: `That option is no longer available for ${item.name}. Refresh your bucket.` };
+    }
     const addonPrice = addon_selected ? Number(item.addon_price_paisa ?? 0) : 0;
     if (!Number.isSafeInteger(addonPrice) || addonPrice < 0) return { error: `The optional extra price for ${item.name} is invalid.` };
     const unit_price_paisa = Number(item.price_paisa) + addonPrice;
     if (!Number.isSafeInteger(unit_price_paisa) || unit_price_paisa < 0) return { error: `The price for ${item.name} is invalid.` };
-    const name = `${item.name}${addon_selected ? ` + ${item.addon_name}` : ""}`;
+    const name = `${item.name}${option ? ` · ${option.name}` : ""}${addon_selected ? ` + ${item.addon_name}` : ""}`;
     total_paisa += unit_price_paisa * line.quantity;
-    priced.push({ item_id: item.id, name, quantity: line.quantity, unit_price_paisa, addon_selected });
+    priced.push({ item_id: item.id, name, quantity: line.quantity, unit_price_paisa, addon_selected, ...(option ? { option_id: option.id } : {}) });
   }
   return { items: priced, total_paisa, total_display: `Rs ${Math.round(total_paisa / 100).toLocaleString("en-PK")}` };
 }
@@ -460,7 +470,7 @@ export default async (request) => {
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
-      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
+      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const catalog = await menuStore.readCatalog();
       const menuItemsById = new Map(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item]));
       const unavailableItem = order.items.find((item) => menuItemsById.get(String(item.item_id))?.available === false);
@@ -558,7 +568,7 @@ export default async (request) => {
       if (customerType !== "STUDENT" && customerType !== "TEACHER") return reply({ error: "Choose whether the order is for a student or teacher." }, 400);
       if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId ?? "")) return reply({ error: "Student ID must contain seven digits." }, 400);
       if (customerType === "TEACHER" && (!customerName || customerName.length > 100)) return reply({ error: "Enter the teacher’s name (up to 100 characters)." }, 400);
-      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean"))) return reply({ error: "Order items are invalid." }, 400);
+      if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
       const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, order.mode);
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);

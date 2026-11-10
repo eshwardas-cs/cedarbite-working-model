@@ -6,6 +6,8 @@
 import { randomUUID } from "node:crypto";
 
 const BUCKET = "menu-images";
+// Each item's selectable options (e.g. drink flavours), see supabase/migrations/0006_menu_options.sql.
+const OPTION_SELECT = "menu_item_options(id,name,is_available,sort_order)";
 const ITEM_COLUMNS = "id,category_id,name,description,price_paisa,addon_name,addon_price_paisa,is_available,quick_allowed,scheduled_allowed,prep_minutes,image_path,sort_order";
 
 export class MenuStoreError extends Error {
@@ -73,13 +75,53 @@ function toItem(row) {
     addon_name: row.addon_name,
     addon_price_paisa: row.addon_price_paisa,
     image_data: publicImageUrl(row.image_path),
+    options: toOptions(row.menu_item_options),
   };
+}
+
+function toOptions(rows) {
+  return (Array.isArray(rows) ? [...rows] : [])
+    .sort((a, b) => a.sort_order - b.sort_order || String(a.id).localeCompare(String(b.id)))
+    .map((option) => ({ id: option.id, name: option.name, available: option.is_available }));
+}
+
+/**
+ * Checks the options sent by the staff screen (same rules as Eshwar's design):
+ * at most 25, each with a 1-80 character name, names unique for the item, available on/off.
+ */
+function cleanOptions(options) {
+  if (!Array.isArray(options) || options.length > 25) throw new MenuStoreError("An item can have at most 25 choices.", 400);
+  const names = new Set();
+  return options.map((option) => {
+    const name = typeof option?.name === "string" ? option.name.trim() : "";
+    if (!name || name.length > 80) throw new MenuStoreError("Each choice needs a name of 1 to 80 characters.", 400);
+    if (names.has(name.toLowerCase())) throw new MenuStoreError("Choice names must be unique for this item.", 400);
+    names.add(name.toLowerCase());
+    if (option.available != null && typeof option.available !== "boolean") throw new MenuStoreError("Choice availability must be on or off.", 400);
+    if (option.id != null && (typeof option.id !== "string" || option.id.length > 36)) throw new MenuStoreError("A choice reference is invalid. Refresh and try again.", 400);
+    return { id: option.id ?? null, name, available: option.available ?? true };
+  });
+}
+
+/** Makes the item's options exactly this list, in this order (keeps the IDs of options that already exist). */
+async function replaceOptions(itemId, options) {
+  const existing = new Set((await rest(`menu_item_options?select=id&menu_item_id=eq.${itemId}`) ?? []).map((row) => row.id));
+  const rows = options.map((option, index) => ({
+    id: option.id && existing.has(option.id) ? option.id : randomUUID().replaceAll("-", ""),
+    menu_item_id: itemId,
+    name: option.name,
+    is_available: option.available,
+    sort_order: index,
+  }));
+  if (rows.length) await rest("menu_item_options?on_conflict=id", { method: "POST", body: rows, prefer: "resolution=merge-duplicates,return=minimal" });
+  const keep = rows.map((row) => row.id);
+  await rest(`menu_item_options?menu_item_id=eq.${itemId}${keep.length ? `&id=not.in.(${keep.join(",")})` : ""}`, { method: "DELETE", prefer: "return=minimal" });
 }
 
 /** The live menu: categories in staff order, each with its active items in staff order. */
 export async function readCatalog() {
   const rows = await rest(
-    `menu_categories?select=id,name,sort_order,menu_items(${ITEM_COLUMNS})` +
+    `menu_categories?select=id,name,sort_order,menu_items(${ITEM_COLUMNS},${OPTION_SELECT})` +
       "&menu_items.is_active=eq.true&order=sort_order.asc,id.asc&menu_items.order=sort_order.asc,id.asc",
   );
   return {
@@ -109,7 +151,7 @@ async function uploadJpeg(dataUrl) {
 }
 
 async function updateActiveItem(itemId, changes) {
-  const rows = await rest(`menu_items?id=eq.${itemId}&is_active=eq.true`, { method: "PATCH", body: changes, prefer: "return=representation" });
+  const rows = await rest(`menu_items?id=eq.${itemId}&is_active=eq.true&select=${ITEM_COLUMNS},${OPTION_SELECT}`, { method: "PATCH", body: changes, prefer: "return=representation" });
   if (!rows?.length) throw new MenuStoreError("This item is no longer on the menu. Refresh the menu and try again.", 409);
   return rows[0];
 }
@@ -128,6 +170,7 @@ export async function removeItem(itemId) {
 }
 
 export async function addItem(item) {
+  const options = item.options == null ? [] : cleanOptions(item.options);
   const catalog = await readCatalog();
   if (!catalog.categories.some((category) => category.id === item.category_id)) throw new MenuStoreError("That category is no longer on the menu. Refresh and choose a current category.", 409);
   if (allItems(catalog).length >= 200) throw new MenuStoreError("The menu has reached its 200-item limit.", 409);
@@ -150,7 +193,10 @@ export async function addItem(item) {
       sort_order: await nextItemPosition(item.category_id),
     },
   });
-  return toItem(rows[0]);
+  if (!options.length) return toItem(rows[0]);
+  await replaceOptions(rows[0].id, options);
+  const [saved] = await rest(`menu_items?select=${ITEM_COLUMNS},${OPTION_SELECT}&id=eq.${rows[0].id}`) ?? [];
+  return toItem(saved ?? rows[0]);
 }
 
 /**
@@ -160,6 +206,8 @@ export async function addItem(item) {
  *   data:image/jpeg -> new photo uploaded
  */
 export async function updateItem(item) {
+  // Options are only changed when the screen sends them (older screens don't, and then they stay as they are).
+  const options = item.options === undefined ? undefined : cleanOptions(item.options ?? []);
   const [current] = await rest(`menu_items?select=${ITEM_COLUMNS}&id=eq.${item.id}&is_active=eq.true`) ?? [];
   if (!current) throw new MenuStoreError("This item is no longer on the menu. Refresh the menu and try again.", 409);
   const catalog = await readCatalog();
@@ -184,6 +232,7 @@ export async function updateItem(item) {
     image_path: imagePath,
   };
   if (current.category_id !== item.category_id) changes.sort_order = await nextItemPosition(item.category_id);
+  if (options !== undefined) await replaceOptions(item.id, options);
   return toItem(await updateActiveItem(item.id, changes));
 }
 

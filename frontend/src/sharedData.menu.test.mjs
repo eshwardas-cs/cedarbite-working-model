@@ -20,6 +20,8 @@ const menu = vi.hoisted(() => {
     categories: [{ id: 1, name: "Snacks", items: [
       { id: 1, category_id: 1, name: "Samosa", price_paisa: 15000, available: true, quick_allowed: true, scheduled_allowed: true, addon_name: null, addon_price_paisa: 0 },
       { id: 2, category_id: 1, name: "Wonton", price_paisa: 20000, available: false, quick_allowed: true, scheduled_allowed: true, addon_name: null, addon_price_paisa: 0 },
+      { id: 3, category_id: 1, name: "Cold drink", price_paisa: 10000, available: true, quick_allowed: true, scheduled_allowed: true, addon_name: null, addon_price_paisa: 0,
+        options: [{ id: "opt-cola", name: "Cola", available: true }, { id: "opt-mango", name: "Mango", available: false }] },
     ] }],
   };
   return {
@@ -118,7 +120,7 @@ describe("staff menu changes", () => {
 describe("menu reads and order prices come from Supabase", () => {
   it("serves the Supabase menu and sold-out list", async () => {
     await expect((await get("menu")).json()).resolves.toEqual({ categories: menu.catalog.categories });
-    await expect((await get("availability")).json()).resolves.toEqual({ availability: { 1: true, 2: false } });
+    await expect((await get("availability")).json()).resolves.toEqual({ availability: { 1: true, 2: false, 3: true } });
   });
 
   it("prices an order with Supabase item numbers and ignores the browser's price", async () => {
@@ -305,5 +307,31 @@ describe("students can cancel only before the canteen accepts", () => {
     await cancel();
     expect((await post({ action: "set-status", order_id: id, status: "PREPARING" }, MANAGER)).status).toBe(409);
     expect(orderDb.rows.get(id).status).toBe("CANCELLED");
+  });
+});
+
+describe("menu item options (e.g. drink flavours)", () => {
+  const id = "77777777-7777-4777-8777-777777777777";
+  const drink = (extra = {}) => post({ action: "create-order", order: { id, pickup_code: "CB777777", mode: "QUICK", payment_method: "cash", items: [{ item_id: 3, name: "Cold drink", quantity: 2, ...extra }] } });
+
+  it("saves the chosen option in the order line name, at the item's price", async () => {
+    const response = await drink({ option_id: "opt-cola", unit_price_paisa: 1 });
+    expect(response.status).toBe(201);
+    const { order } = await response.json();
+    expect(order.items[0]).toMatchObject({ name: "Cold drink · Cola", option_id: "opt-cola", unit_price_paisa: 10000 });
+    expect(order.total_paisa).toBe(20000);
+  });
+
+  it("refuses a missing, out-of-stock, unknown or badly formed option", async () => {
+    expect((await drink()).status).toBe(409);
+    expect((await drink({ option_id: "opt-mango" })).status).toBe(409);
+    expect((await drink({ option_id: "opt-nope" })).status).toBe(409);
+    expect((await drink({ option_id: 5 })).status).toBe(400);
+    expect(orderDb.insertOrder).not.toHaveBeenCalled();
+  });
+
+  it("refuses an option on an item that has none", async () => {
+    const response = await post({ action: "create-order", order: { id, pickup_code: "CB777777", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1, option_id: "opt-cola" }] } });
+    expect(response.status).toBe(409);
   });
 });
