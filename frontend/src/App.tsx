@@ -93,6 +93,22 @@ function storageRemove(area: BrowserStorage, key: string): void {
   try { (area === "local" ? window.localStorage : window.sessionStorage).removeItem(key); }
   catch { /* Storage can be disabled by browser privacy settings. */ }
 }
+type SavedBucket = { items: Record<string, number>; dealIds: string[] };
+const GUEST_BUCKET_KEY = "cedarbite-bucket:guest";
+const accountBucketKey = (email: string) => `cedarbite-bucket:${email.trim().toLowerCase()}`;
+function readSavedBucket(key: string): SavedBucket {
+  try {
+    const saved = JSON.parse(storageGet("local", key) || "null") as Partial<SavedBucket> | null;
+    const items = Object.fromEntries(Object.entries(saved?.items ?? {}).filter(([, quantity]) => Number.isInteger(quantity) && quantity > 0 && quantity <= 20));
+    const dealIds = Array.isArray(saved?.dealIds) ? saved.dealIds.filter((id): id is string => typeof id === "string") : [];
+    return { items, dealIds };
+  } catch { return { items: {}, dealIds: [] }; }
+}
+function mergeSavedBuckets(first: SavedBucket, second: SavedBucket): SavedBucket {
+  const items = { ...first.items };
+  for (const [key, quantity] of Object.entries(second.items)) items[key] = Math.min(20, (items[key] ?? 0) + quantity);
+  return { items, dealIds: [...first.dealIds, ...second.dealIds] };
+}
 function stationForPage(page: Page) {
   return page === "counter" ? "order_taker" : page === "cashdesk" ? "cashier" : page === "kitchen" ? "kitchen" : "order_manager";
 }
@@ -307,8 +323,8 @@ export default function App() {
   const [topUpSubmitting, setTopUpSubmitting] = useState(false);
   const [walletMessage, setWalletMessage] = useState("");
   const [cashTopUpPending, setCashTopUpPending] = useState(false);
-  const [cart, setCart] = useState<Record<string, number>>({});
-  const [cartDealIds, setCartDealIds] = useState<string[]>([]);
+  const [cart, setCart] = useState<Record<string, number>>(() => readSavedBucket(GUEST_BUCKET_KEY).items);
+  const [cartDealIds, setCartDealIds] = useState<string[]>(() => readSavedBucket(GUEST_BUCKET_KEY).dealIds);
   const [addOnPromptItem, setAddOnPromptItem] = useState<Item | null>(null);
   const [optionPromptItem, setOptionPromptItem] = useState<Item | null>(null);
   const [pendingOptionId, setPendingOptionId] = useState<string | undefined>();
@@ -320,6 +336,37 @@ export default function App() {
     const timeout = window.setTimeout(() => setToast(""), 3000);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+  useEffect(() => {
+    const nextOwner = user?.email?.trim().toLowerCase() ? accountBucketKey(user.email) : "guest";
+    if (nextOwner === bucketOwnerRef.current) {
+      bucketHydratedRef.current = true;
+      return;
+    }
+    const currentOwner = bucketOwnerRef.current;
+    if (bucketHydratedRef.current) {
+      const currentKey = currentOwner === "guest" ? GUEST_BUCKET_KEY : currentOwner;
+      storageSet("local", currentKey, JSON.stringify({ items: cart, dealIds: cartDealIds } satisfies SavedBucket));
+    }
+    let nextBucket = readSavedBucket(nextOwner === "guest" ? GUEST_BUCKET_KEY : nextOwner);
+    if (nextOwner !== "guest") {
+      nextBucket = mergeSavedBuckets(nextBucket, readSavedBucket(GUEST_BUCKET_KEY));
+      storageSet("local", nextOwner, JSON.stringify(nextBucket satisfies SavedBucket));
+      storageRemove("local", GUEST_BUCKET_KEY);
+    } else {
+      storageSet("local", GUEST_BUCKET_KEY, JSON.stringify(nextBucket satisfies SavedBucket));
+    }
+    bucketOwnerRef.current = nextOwner;
+    bucketHydratedRef.current = true;
+    skipBucketPersistRef.current = true;
+    setCart(nextBucket.items);
+    setCartDealIds(nextBucket.dealIds);
+  }, [user?.email, cart, cartDealIds]);
+  useEffect(() => {
+    if (!bucketHydratedRef.current) return;
+    if (skipBucketPersistRef.current) { skipBucketPersistRef.current = false; return; }
+    const key = bucketOwnerRef.current === "guest" ? GUEST_BUCKET_KEY : bucketOwnerRef.current;
+    storageSet("local", key, JSON.stringify({ items: cart, dealIds: cartDealIds } satisfies SavedBucket));
+  }, [cart, cartDealIds]);
   const [menuError, setMenuError] = useState("");
   const [googleReady, setGoogleReady] = useState(false);
   const [page, setPage] = useState<Page>(() => pageForPath(window.location.pathname));
@@ -336,6 +383,9 @@ export default function App() {
   });
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null);
   const loginDialog = useRef<HTMLDialogElement>(null);
+  const bucketOwnerRef = useRef("guest");
+  const bucketHydratedRef = useRef(false);
+  const skipBucketPersistRef = useRef(false);
   const cashTopUpRequest = useRef<{ signature: string; key: string } | null>(null);
   const [dealMessage, setDealMessage] = useState("");
   const [itemMessage, setItemMessage] = useState("");
