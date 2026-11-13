@@ -452,8 +452,7 @@ export default async (request) => {
       const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) {
         if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.customer_user_id ?? "") !== customer.user_id) return reply({ error: "This order reference is already in use." }, 409);
-        const receiptEmailSent = await notifications.deliverOrderEmail(existingOrder, "receipt");
-        return reply({ order: { ...forStudent(existingOrder), receipt_email_sent: receiptEmailSent }, duplicate: true });
+        return reply({ order: forStudent(existingOrder), duplicate: true });
       }
       // The wallet is not built yet, so nothing can check a balance. Refuse it rather than mark an order PAID for free.
       if (order.payment_method === "wallet") return reply({ error: "The CedarBite wallet isn't available yet. Choose another payment method." }, 400);
@@ -498,7 +497,7 @@ export default async (request) => {
       if (dealDiscountPaisa > pricedOrder.total_paisa) return reply({ error: "The deal price could not be applied. Refresh the menu and try again." }, 409);
       const saved = {
         id: order.id,
-        status: "SUBMITTED",
+        status: order.mode === "QUICK" ? "READY" : "SUBMITTED",
         mode: order.mode === "SCHEDULED" ? "SCHEDULED" : "QUICK",
         total_paisa: pricedOrder.total_paisa - dealDiscountPaisa,
         total_display: `Rs ${Math.round((pricedOrder.total_paisa - dealDiscountPaisa) / 100).toLocaleString("en-PK")}`,
@@ -506,6 +505,7 @@ export default async (request) => {
         deal_ids: dealIds,
         pickup_code: order.pickup_code,
         created_at: new Date().toISOString(),
+        ...(order.mode === "QUICK" ? { ready_at: new Date().toISOString() } : {}),
         pickup_window: order.pickup_window && typeof order.pickup_window === "object" ? order.pickup_window : null,
         items: pricedOrder.items,
         waiting_minutes: 0,
@@ -520,14 +520,14 @@ export default async (request) => {
         // The same order arrived twice at the same moment (a retry): answer with the one that was saved.
         const already = await orderDb.getOrder(saved.id);
         if (already && already.pickup_code === saved.pickup_code && already.customer_user_id === customer.user_id) {
-          const receiptEmailSent = await notifications.deliverOrderEmail(already, "receipt");
-          return reply({ order: { ...forStudent(already), receipt_email_sent: receiptEmailSent }, duplicate: true });
+          return reply({ order: forStudent(already), duplicate: true });
         }
         return reply({ error: "This order reference is already in use." }, 409);
       }
-      // Email failures never undo a successfully saved order. Pending email is retried by the scheduled function.
-      const receiptEmailSent = await notifications.deliverOrderEmail(saved, "receipt");
-      return reply({ order: { ...forStudent(saved), receipt_email_sent: receiptEmailSent } }, 201);
+      // Quick orders are ready for collection immediately. Scheduled orders are emailed
+      // once, with their receipt, when staff marks them ready.
+      if (saved.status === "READY") await notifications.sendReadyPush(saved);
+      return reply({ order: forStudent(saved) }, 201);
     }
 
     if (body.action === "cancel-order") {
@@ -571,7 +571,7 @@ export default async (request) => {
       // menu item for immediate collection, regardless of its student order mode.
       const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, "COUNTER");
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
-      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
+      const saved = { id: order.id, status: order.mode === "QUICK" ? "READY" : "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), ...(order.mode === "QUICK" ? { ready_at: new Date().toISOString() } : {}), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
       if (!await orderDb.insertOrder(saved)) return reply({ order: await orderDb.getOrder(saved.id), duplicate: true });
       return reply({ order: saved }, 201);
     }
@@ -794,7 +794,10 @@ export default async (request) => {
       // Only saves if no other screen moved this order on in the meantime.
       const saved = await orderDb.updateOrder(updated, { expectedStatus: order.status });
       if (saved) {
-        if (body.status === "READY") await notifications.sendReadyPush(saved);
+        if (body.status === "READY") {
+          await notifications.sendReadyPush(saved);
+          if (saved.mode === "SCHEDULED") await notifications.deliverOrderEmail(saved, "ready_receipt");
+        }
         return reply({ order: saved });
       }
       const current = await orderDb.getOrder(body.order_id);

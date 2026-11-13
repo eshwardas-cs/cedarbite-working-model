@@ -79,9 +79,10 @@ export async function listActive() {
   return orders(await rest("orders?select=data&is_active=eq.true&order=created_at.asc"));
 }
 
-export async function listReadyForReminder(before, limit = 100) {
-  const cutoff = encodeURIComponent(String(before));
-  return orders(await rest(`orders?select=data&status=eq.READY&ready_at=lt.${cutoff}&order=ready_at.asc&limit=${Number(limit)}`));
+// Scheduled orders that are ready; the notification delivery table makes repeated
+// scheduler passes idempotent while recovering an interrupted ready-email request.
+export async function listScheduledReady(limit = 100) {
+  return orders(await rest(`orders?select=data&status=eq.READY&mode=eq.SCHEDULED&order=ready_at.desc.nullslast&limit=${Number(limit)}`));
 }
 
 // Collected and cancelled orders, most recent first.

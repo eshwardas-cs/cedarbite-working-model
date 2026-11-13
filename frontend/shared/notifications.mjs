@@ -27,11 +27,10 @@ async function db(path, { method = "GET", body, prefer } = {}) {
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const orderUrl = () => `${String(process.env.PUBLIC_SITE_URL || "https://cedarbite.me").replace(/\/+$/, "")}/my-orders`;
 
-function emailContent(order, kind) {
-  const receipt = kind === "receipt";
+function emailContent(order) {
   const lines = (Array.isArray(order.items) ? order.items : []).map((item) => `<tr><td style="padding:9px 0;border-bottom:1px solid #e6eaf0">${safe(item.quantity)} × ${safe(item.name)}</td><td style="padding:9px 0;border-bottom:1px solid #e6eaf0;text-align:right">${item.unit_price_paisa == null ? "" : `Rs ${Math.round(item.unit_price_paisa * item.quantity / 100).toLocaleString("en-PK")}`}</td></tr>`).join("");
-  const subject = receipt ? `CedarBite receipt · ${order.pickup_code}` : `Your CedarBite order is ready · ${order.pickup_code}`;
-  const intro = receipt ? "Your order has been placed." : "Your order has been ready for collection for 10 minutes and is still marked uncollected.";
+  const subject = `Your CedarBite order is ready · ${order.pickup_code}`;
+  const intro = "Your scheduled order is ready for collection. Your receipt is below.";
   const paymentSummary = `${order.payment_method ?? "cash"} · ${order.payment_status ?? "unpaid"}`;
   const placedAt = order.created_at ? new Date(order.created_at).toLocaleString("en-PK", { timeZone: "Asia/Karachi" }) : "—";
   const text = [
@@ -41,7 +40,7 @@ function emailContent(order, kind) {
     `Total: ${order.total_display ?? "—"}`, `Payment: ${paymentSummary}`, `Placed: ${placedAt}`, `View order status: ${orderUrl()}`,
   ].join("\n");
   const savings = Number(order.deal_discount_paisa) > 0 ? `<tr><td style="padding:9px 0;color:#16734c">Deal savings</td><td style="padding:9px 0;text-align:right;color:#16734c">−Rs ${Math.round(order.deal_discount_paisa / 100).toLocaleString("en-PK")}</td></tr>` : "";
-  const html = `<div style="margin:0;padding:28px 12px;background:#f4f7fb;font-family:Arial,sans-serif;color:#102b4c"><div style="max-width:560px;margin:auto;padding:28px;background:#fff;border:1px solid #e2e8f0;border-radius:16px"><div style="font-size:23px;font-weight:800">Cedar<span style="color:#d9a900">Bite</span></div><p style="color:#53677f;line-height:1.6">${intro}</p><div style="margin:20px 0;padding:18px;border-radius:12px;background:#102b4c;color:white;text-align:center"><div style="font-size:10px;letter-spacing:2px;color:#ffe08a">PICKUP NUMBER</div><div style="margin-top:6px;font-size:30px;font-weight:800;letter-spacing:3px">${safe(order.pickup_code)}</div></div><table style="width:100%;border-collapse:collapse">${lines}${savings}</table><p style="font-weight:800">Total: ${safe(order.total_display ?? "—")}</p><p style="color:#53677f;font-size:12px;line-height:1.6">Payment: ${safe(paymentSummary)}<br/>Placed: ${safe(placedAt)}</p><p style="margin-top:22px"><a href="${safe(orderUrl())}" style="display:inline-block;padding:12px 16px;border-radius:8px;background:#ffc928;color:#102b4c;text-decoration:none;font-weight:700">View My Orders</a></p><p style="margin:20px 0 0;color:#65758a;font-size:12px;line-height:1.6">${receipt ? "Keep this email and show your pickup number to the canteen staff." : "Please collect your order and show the pickup number to the canteen staff."}</p></div></div>`;
+  const html = `<div style="margin:0;padding:28px 12px;background:#f4f7fb;font-family:Arial,sans-serif;color:#102b4c"><div style="max-width:560px;margin:auto;padding:28px;background:#fff;border:1px solid #e2e8f0;border-radius:16px"><div style="font-size:23px;font-weight:800">Cedar<span style="color:#d9a900">Bite</span></div><p style="color:#53677f;line-height:1.6">${intro}</p><div style="margin:20px 0;padding:18px;border-radius:12px;background:#102b4c;color:white;text-align:center"><div style="font-size:10px;letter-spacing:2px;color:#ffe08a">PICKUP NUMBER</div><div style="margin-top:6px;font-size:30px;font-weight:800;letter-spacing:3px">${safe(order.pickup_code)}</div></div><table style="width:100%;border-collapse:collapse">${lines}${savings}</table><p style="font-weight:800">Total: ${safe(order.total_display ?? "—")}</p><p style="color:#53677f;font-size:12px;line-height:1.6">Payment: ${safe(paymentSummary)}<br/>Placed: ${safe(placedAt)}</p><p style="margin-top:22px"><a href="${safe(orderUrl())}" style="display:inline-block;padding:12px 16px;border-radius:8px;background:#ffc928;color:#102b4c;text-decoration:none;font-weight:700">View My Orders</a></p><p style="margin:20px 0 0;color:#65758a;font-size:12px;line-height:1.6">Show your pickup number to the canteen staff when collecting your order.</p></div></div>`;
   return { subject, text, html };
 }
 
@@ -95,6 +94,8 @@ async function finish(delivery, status, fields = {}) {
 }
 
 export async function deliverOrderEmail(order, kind) {
+  // Only scheduled orders receive one email, when the canteen marks them ready.
+  if (order?.mode !== "SCHEDULED" || kind !== "ready_receipt" || order.status !== "READY") return false;
   if (!order?.customer_email || !/^\d{7}@cedar\.edu\.pk$/i.test(order.customer_email)) {
     console.info("CedarBite skipped order email because this order has no verified Cedar student email.");
     return false;
@@ -105,7 +106,7 @@ export async function deliverOrderEmail(order, kind) {
     delivery = await enqueue(order, kind);
     hasClaim = await claim(delivery);
     if (!hasClaim) return delivery?.status === "sent";
-    await sendEmail(order.customer_email, emailContent(order, kind), `cedarbite-${kind}-${order.id}`);
+    await sendEmail(order.customer_email, emailContent(order), `cedarbite-${kind}-${order.id}`);
     await finish(delivery, "sent", { sent_at: new Date().toISOString(), last_error: null, attempts: (delivery.attempts ?? 0) + 1 });
     return true;
   } catch (error) {
@@ -180,13 +181,9 @@ export async function processPendingEmailDeliveries(orderStore) {
   for (const delivery of pending ?? []) {
     const order = await orderStore.getOrder(delivery.order_id);
     if (!order) continue;
-    if (delivery.kind === "collection_reminder") {
-      const readyAt = Date.parse(order.ready_at ?? "");
-      if (order.status !== "READY" || !Number.isFinite(readyAt) || Date.now() - readyAt < 10 * 60_000) {
-        const current = await enqueue(order, delivery.kind);
-        if (current?.status === "pending") await db(`notification_deliveries?id=eq.${encodeURIComponent(current.id)}&status=eq.pending`, { method: "PATCH", body: { status: "skipped" }, prefer: "return=minimal" });
-        continue;
-      }
+    if (delivery.kind !== "ready_receipt" || order.mode !== "SCHEDULED" || order.status !== "READY") {
+      await db(`notification_deliveries?id=eq.${encodeURIComponent(delivery.id)}&status=eq.pending`, { method: "PATCH", body: { status: "skipped" }, prefer: "return=minimal" });
+      continue;
     }
     attempted += 1;
     await deliverOrderEmail(order, delivery.kind);
