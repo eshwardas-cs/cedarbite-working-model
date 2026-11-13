@@ -57,6 +57,10 @@ In **SQL Editor**, run these files in order (each one is safe to run again):
 8. `supabase/migrations/0009_atomic_wallet_and_reversible_orders.sql`: transactional pickup capacity,
    wallet debits/top-ups/refunds, reversible order removal, wallet history, and order audit events. Run it
    **before** deploying the matching function code. It also widens order totals to `bigint`.
+9. `supabase/migrations/0010_counter_student_names.sql`: server-only storage for names verified at the
+   counter when a student has not signed in yet. Run it **before** deploying the matching counter code.
+   The table is separate from `profiles`; once the student signs in, their Supabase profile name takes
+   precedence on future lookups and receipts.
 
 ### 3. Menu data (one-time import)
 This copies `frontend/src/catalog.json` (14 categories, 51 items and their photos) into Supabase:

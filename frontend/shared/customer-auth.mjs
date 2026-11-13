@@ -23,11 +23,7 @@ function connection() {
   return { url, key };
 }
 
-// Resolves a Cedar student ID against the server-owned profile table. This is
-// used by staff screens only; never expose a general profile search endpoint.
-export async function studentProfileFromId(studentId) {
-  const id = String(studentId ?? "").trim();
-  if (!/^\d{7}$/.test(id)) throw new CustomerAuthError("Enter a valid 7-digit Cedar student ID.", 400);
+async function studentProfileRow(id) {
   const { url, key } = connection();
   const email = `${id}@cedar.edu.pk`;
   const response = await fetch(
@@ -39,12 +35,76 @@ export async function studentProfileFromId(studentId) {
     throw new CustomerAuthError("The student profile could not be checked right now. Try again.", 502);
   }
   const [profile] = (await response.json().catch(() => [])) ?? [];
-  if (!profile || profile.role !== "student" || String(profile.email).toLowerCase() !== email) {
-    throw new CustomerAuthError("No Cedar student account was found for that ID.", 404);
+  if (!profile || profile.role !== "student" || String(profile.email).toLowerCase() !== email) return null;
+  return profile;
+}
+
+async function counterStudentNameRow(id) {
+  const { url, key } = connection();
+  const response = await fetch(
+    `${url}/rest/v1/counter_student_names?select=student_id,full_name,recorded_by&student_id=eq.${encodeURIComponent(id)}`,
+    { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+  );
+  if (!response.ok) {
+    console.error("CedarBite counter name lookup failed", { status: response.status });
+    throw new CustomerAuthError("The saved student name could not be checked right now. Try again.", 502);
   }
-  const full_name = String(profile.full_name ?? "").trim();
-  if (!full_name) throw new CustomerAuthError("This student’s Cedar profile does not have a name to verify.", 409);
-  return { student_id: id, full_name };
+  const [record] = (await response.json().catch(() => [])) ?? [];
+  return record ?? null;
+}
+
+// Resolves an ID against the authenticated Cedar profile first. The counter may
+// fall back to a staff-entered name for in-person orders; cash desk lookups do not.
+export async function studentProfileFromId(studentId, { allowCounterName = false, allowMissingName = false } = {}) {
+  const id = String(studentId ?? "").trim();
+  if (!/^\d{7}$/.test(id)) throw new CustomerAuthError("Enter a valid 7-digit Cedar student ID.", 400);
+  const profile = await studentProfileRow(id);
+  const profileName = String(profile?.full_name ?? "").trim();
+  if (profileName) return { student_id: id, full_name: profileName, source: "profile", profile_exists: true };
+  if (allowCounterName) {
+    const savedName = await counterStudentNameRow(id);
+    if (savedName?.full_name) return { student_id: id, full_name: String(savedName.full_name).trim(), source: "counter", profile_exists: Boolean(profile) };
+  }
+  if (allowMissingName) return { student_id: id, full_name: null, source: "missing", profile_exists: Boolean(profile) };
+  if (profile) throw new CustomerAuthError("This student’s Cedar profile does not have a name to verify.", 409);
+  throw new CustomerAuthError("No Cedar student account was found for that ID.", 404);
+}
+
+export async function saveCounterStudentName(studentId, fullName, recordedBy) {
+  const id = String(studentId ?? "").trim();
+  const name = String(fullName ?? "").trim().replace(/\s+/g, " ");
+  if (!/^\d{7}$/.test(id) || !name || name.length > 100) {
+    throw new CustomerAuthError("Enter a valid student ID and name (up to 100 characters).", 400);
+  }
+  // An authenticated Supabase profile is authoritative; never replace it with a
+  // name typed at the counter, even if that profile was created moments ago.
+  const profile = await studentProfileRow(id);
+  const profileName = String(profile?.full_name ?? "").trim();
+  if (profileName) return { student_id: id, full_name: profileName, source: "profile", profile_exists: true };
+
+  const { url, key } = connection();
+  const response = await fetch(`${url}/rest/v1/counter_student_names?on_conflict=student_id`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=representation",
+    },
+    body: JSON.stringify({
+      student_id: id,
+      full_name: name,
+      recorded_by: String(recordedBy ?? "counter").trim().slice(0, 80),
+      updated_at: new Date().toISOString(),
+    }),
+  });
+  if (!response.ok) {
+    console.error("CedarBite could not save a counter-entered student name", { status: response.status });
+    throw new CustomerAuthError("The student name could not be saved. The order was not placed; try again.", 502);
+  }
+  const [record] = (await response.json().catch(() => [])) ?? [];
+  if (!record?.full_name) throw new CustomerAuthError("The student name could not be confirmed after saving. The order was not placed; try again.", 502);
+  return { student_id: id, full_name: String(record.full_name).trim(), source: "counter", profile_exists: Boolean(profile) };
 }
 
 export async function profileFromEmail(email) {
