@@ -23,6 +23,44 @@ function connection() {
   return { url, key };
 }
 
+// Resolves a Cedar student ID against the server-owned profile table. This is
+// used by staff screens only; never expose a general profile search endpoint.
+export async function studentProfileFromId(studentId) {
+  const id = String(studentId ?? "").trim();
+  if (!/^\d{7}$/.test(id)) throw new CustomerAuthError("Enter a valid 7-digit Cedar student ID.", 400);
+  const { url, key } = connection();
+  const email = `${id}@cedar.edu.pk`;
+  const response = await fetch(
+    `${url}/rest/v1/profiles?select=email,full_name,role&email=eq.${encodeURIComponent(email)}`,
+    { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+  );
+  if (!response.ok) {
+    console.error("CedarBite student lookup failed", { status: response.status });
+    throw new CustomerAuthError("The student profile could not be checked right now. Try again.", 502);
+  }
+  const [profile] = (await response.json().catch(() => [])) ?? [];
+  if (!profile || profile.role !== "student" || String(profile.email).toLowerCase() !== email) {
+    throw new CustomerAuthError("No Cedar student account was found for that ID.", 404);
+  }
+  const full_name = String(profile.full_name ?? "").trim();
+  if (!full_name) throw new CustomerAuthError("This student’s Cedar profile does not have a name to verify.", 409);
+  return { student_id: id, full_name };
+}
+
+export async function profileFromEmail(email) {
+  const normalized = String(email ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@cedar\.edu\.pk$/.test(normalized)) return null;
+  const { url, key } = connection();
+  const response = await fetch(
+    `${url}/rest/v1/profiles?select=email,full_name,role&email=eq.${encodeURIComponent(normalized)}`,
+    { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+  );
+  if (!response.ok) throw new CustomerAuthError("The Cedar profile could not be checked right now. Try again.", 502);
+  const [profile] = (await response.json().catch(() => [])) ?? [];
+  if (!profile || String(profile.email).toLowerCase() !== normalized) return null;
+  return { email: normalized, role: String(profile.role), full_name: String(profile.full_name ?? "").trim() || null };
+}
+
 // Returns { user_id, email, role, student_id } for a signed-in Cedar account, or throws CustomerAuthError.
 export async function customerFromRequest(request) {
   const match = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "");
@@ -42,7 +80,7 @@ export async function customerFromRequest(request) {
 
   // 2. Their profile only exists if the Cedar-only rule let them in (see 0002_auth_cedar_only.sql).
   const profileResponse = await fetch(
-    `${url}/rest/v1/profiles?select=email,role&id=eq.${encodeURIComponent(authUser.id)}`,
+    `${url}/rest/v1/profiles?select=email,full_name,role&id=eq.${encodeURIComponent(authUser.id)}`,
     { headers: { apikey: key, Authorization: `Bearer ${key}` } },
   );
   if (!profileResponse.ok) {
@@ -58,6 +96,7 @@ export async function customerFromRequest(request) {
     user_id: authUser.id,
     email,
     role: String(profile.role),
+    full_name: String(profile.full_name ?? "").trim() || null,
     student_id: profile.role === "student" && studentNumber ? studentNumber[1] : null,
   };
 }

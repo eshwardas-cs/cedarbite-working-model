@@ -474,6 +474,13 @@ img.counter-item-visual{display:block}
 .history-delete-button:disabled{opacity:.5;cursor:wait}
 :root[data-theme="dark"] .history-delete-button{border-color:#624047;background:#35252c;color:#ffb4b8}
 :root[data-theme="dark"] .history-delete-button:hover{border-color:#c95359;background:#492a32;color:#ffdadd}
+.history-restore-button{min-height:35px;padding:0 10px;border:1px solid #b8dfc9;border-radius:7px;background:#effaf3;color:#236443;font-size:12px;font-weight:750;cursor:pointer;white-space:nowrap}
+.history-restore-button:hover:not(:disabled){border-color:#39845b;background:#ddf3e5;color:#174b32}
+.history-restore-button:disabled{opacity:.5;cursor:wait}
+.history-voided{border-color:#e8d8a8;background:#fffdf5}
+:root[data-theme="dark"] .history-restore-button{border-color:#365a43;background:#1e3a2a;color:#d1f0dc}
+:root[data-theme="dark"] .history-restore-button:hover:not(:disabled){border-color:#59a476;background:#254833;color:#effff4}
+:root[data-theme="dark"] .history-voided{border-color:#594c2d;background:#302b1e}
 
 /* Improve contrast for loading, empty, and editing states in dark mode. */
 :root{--panel:#fff}

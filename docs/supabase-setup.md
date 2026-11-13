@@ -1,14 +1,15 @@
 # Supabase + Cedar Google sign-in: setup
 
-This branch adds an optional Supabase backend for two things:
+This branch uses Supabase for the shared menu, sign-in, orders, and wallet ledger:
 
 1. **Menu**: categories, items and photos are read from Supabase.
 2. **Sign-in**: Google sign-in through Supabase, limited to Cedar College Google accounts.
+3. **Orders and wallet**: shared order records, scheduled-slot capacity, and wallet entries.
 
 **Safety switch:** nothing changes until `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` are set.
 Without them the app keeps its current menu and sign-in behaviour.
 
-Orders, wallet and payments are **not** part of this change. They still use the existing code.
+The Netlify function uses the server-only Supabase secret key for order and wallet operations. The browser never receives it.
 
 ---
 
@@ -50,6 +51,12 @@ In **SQL Editor**, run these files in order (each one is safe to run again):
    Netlify-storage orders were not copied because there were no real ones, and the copy step was removed.)
 5. `supabase/migrations/0005_order_cancel.sql`: cancelled orders leave the kitchen queue (`is_active` now
    means "not collected and not cancelled"). Run it **before** deploying "Cancel order".
+6. `supabase/migrations/0006_menu_options.sql`: selectable item options, such as drink choices.
+7. `supabase/migrations/0007_order_notifications.sql` and `0008_ready_order_receipts.sql`: order alert and
+   scheduled-order receipt delivery records.
+8. `supabase/migrations/0009_atomic_wallet_and_reversible_orders.sql`: transactional pickup capacity,
+   wallet debits/top-ups/refunds, reversible order removal, wallet history, and order audit events. Run it
+   **before** deploying the matching function code. It also widens order totals to `bigint`.
 
 ### 3. Menu data (one-time import)
 This copies `frontend/src/catalog.json` (14 categories, 51 items and their photos) into Supabase:
@@ -104,7 +111,9 @@ The publishable key is meant to be public. Security comes from the database rule
   from the browser. An order without a valid sign-in is refused and nothing is saved.
 - **Orders live in Supabase** (`public.orders`, via `frontend/shared/order-store.mjs`). Each row keeps the
   whole order in `data` plus searchable copies (status, customer, totals, times). A status change only
-  saves if no other screen changed the order first.
+  saves if no other screen changed the order first. Scheduled capacity is reserved inside a database
+  transaction, so simultaneous checkouts cannot claim the final place in a slot twice. The limit is 20
+  orders per 10-minute slot.
 - **My orders:** the `?scope=my-orders` request needs the same sign-in token and returns only that person's
   orders (refreshed every 10 seconds on the My orders page). Online orders placed before PR #4 have no
   owner, so they don't appear on anyone's list.
@@ -112,8 +121,15 @@ The publishable key is meant to be public. Security comes from the database rule
   `SUBMITTED` and unpaid (`cancel-order` action). The save only happens if the order is still `SUBMITTED`,
   so if the kitchen accepts it at the same moment, the kitchen wins. Cancelled orders leave the queue, move
   to history, can't be moved on or marked paid by staff, and don't count as "orders placed" in sales.
-- **Wallet payment is switched off** until the wallet moves to Supabase: nothing can check a balance yet, so
-  the server refuses `wallet` orders instead of marking them paid, and checkout no longer offers it.
+- **Wallet balances and activity live in Supabase** (`wallet_accounts`, `wallet_entries`). Wallet order
+  payment, cash-desk top-up, and wallet refund each update the balance and append their ledger entry in one
+  database transaction. A repeated transaction reference cannot add the same credit twice.
+- **Older Netlify wallet data is imported once per student** when that student's wallet is read. The
+  cash-desk wallet-history view also imports the prior ledger. A database marker prevents duplicate balance
+  imports. Leave old Netlify Blobs in place until balances and history are checked after rollout.
+- **Removed orders are voided, not deleted.** `VOIDED` rows leave the live queue but remain in
+  `public.orders`; `public.order_audit_events` records creation, updates, status changes, voids, restores,
+  and wallet refunds. Order managers can restore eligible voided records through the history screen.
 - Netlify storage no longer holds menu or order data. Deals are still stored there for now, checked against
   the Supabase menu.
 

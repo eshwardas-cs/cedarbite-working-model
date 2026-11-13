@@ -41,6 +41,25 @@ async function rest(path, { method = "GET", body, prefer } = {}) {
   return data;
 }
 
+function rpcError(code) {
+  const messages = {
+    SLOT_FULL: "That pickup slot is full or no longer available. Choose another 10-minute slot.",
+    INVALID_PICKUP_SLOT: "Choose a valid 10-minute pickup slot.",
+    INSUFFICIENT_WALLET_BALANCE: "Your wallet balance is too low. Add wallet balance to continue.",
+    WALLET_STUDENT_ONLY: "Wallet payment is available only for a verified student account.",
+  };
+  return new OrderStoreError(messages[code] || "The order could not be saved. Please refresh and try again.", code === "SLOT_FULL" ? 409 : 400);
+}
+
+export async function createOrderAtomic(order, actor = "online") {
+  const result = await rest("rpc/cedar_create_order_atomic", {
+    method: "POST",
+    body: { p_row: rowFromOrder(order), p_capacity: 20, p_actor: actor },
+  });
+  if (!result?.ok) throw rpcError(result?.error);
+  return { order: result.order, duplicate: result.duplicate === true };
+}
+
 const validTime = (value) => (typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null);
 
 // The searchable copies are always taken from the order itself, so they can never disagree with it.
@@ -103,8 +122,8 @@ export async function listForCustomer(userId, limit = 100) {
 // Saves a NEW order. Returns false (and changes nothing) if that order ID already exists.
 export async function insertOrder(order) {
   try {
-    await rest("orders", { method: "POST", body: rowFromOrder(order), prefer: "return=minimal" });
-    return true;
+    const result = await createOrderAtomic(order);
+    return !result.duplicate;
   } catch (error) {
     if (error instanceof OrderStoreError && error.message === "DUPLICATE") return false;
     throw error;
@@ -114,15 +133,26 @@ export async function insertOrder(order) {
 // Saves changes to an existing order. With expectedStatus, it only saves if nobody changed the
 // status in the meantime (two screens pressing the same button); returns the saved order or null.
 export async function updateOrder(order, { expectedStatus } = {}) {
-  const statusFilter = expectedStatus ? `&status=eq.${encodeURIComponent(expectedStatus)}` : "";
-  const { id, ...changes } = rowFromOrder(order);
-  const rows = await rest(`orders?${idFilter(id)}${statusFilter}`, { method: "PATCH", body: changes, prefer: "return=representation" });
-  return rows?.[0]?.data ?? null;
+  return rest("rpc/cedar_update_order_atomic", {
+    method: "POST",
+    body: { p_row: rowFromOrder(order), p_expected_status: expectedStatus ?? null, p_actor: "staff" },
+  });
 }
 
+export async function voidOrder(id, actor = "manager", reason = "Removed by order manager", allowedStatuses = ["SUBMITTED", "COLLECTED", "CANCELLED"]) {
+  return rest("rpc/cedar_void_order", {
+    method: "POST",
+    body: { p_order_id: String(id), p_actor: actor, p_reason: reason, p_allowed_statuses: allowedStatuses },
+  });
+}
+
+export async function restoreOrder(id, actor = "manager") {
+  return rest("rpc/cedar_restore_order", { method: "POST", body: { p_order_id: String(id), p_actor: actor } });
+}
+
+// Kept for compatibility with older callers; this now records a reversible void event.
 export async function deleteOrder(id) {
-  const rows = await rest(`orders?${idFilter(id)}`, { method: "DELETE", prefer: "return=representation" });
-  return Array.isArray(rows) && rows.length > 0;
+  return Boolean(await voidOrder(id));
 }
 
 // One-time copy of orders saved before the move. Orders already in Supabase are left untouched.

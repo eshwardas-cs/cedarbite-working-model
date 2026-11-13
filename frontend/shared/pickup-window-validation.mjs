@@ -1,6 +1,6 @@
 const PICKUP_SLOT_MS = 10 * 60 * 1000;
 const PAKISTAN_OFFSET_MS = 5 * 60 * 60 * 1000;
-const PICKUP_SLOT_CAPACITY = 8;
+const PICKUP_SLOT_CAPACITY = 20;
 
 export function listPickupWindows(orders = [], now = Date.now()) {
   const pakistanNow = new Date(now + PAKISTAN_OFFSET_MS);
