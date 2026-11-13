@@ -9,6 +9,12 @@ const BUCKET = "menu-images";
 // Each item's selectable options (e.g. drink flavours), see supabase/migrations/0006_menu_options.sql.
 const OPTION_SELECT = "menu_item_options(id,name,is_available,sort_order)";
 const ITEM_COLUMNS = "id,category_id,name,description,price_paisa,addon_name,addon_price_paisa,is_available,quick_allowed,scheduled_allowed,prep_minutes,image_path,sort_order";
+const DEFAULT_COLD_DRINK_OPTIONS = [
+  { id: "drink-pepsi", name: "Pepsi", available: true },
+  { id: "drink-diet-pepsi", name: "Diet Pepsi", available: true },
+  { id: "drink-7up", name: "7UP", available: true },
+  { id: "drink-mirinda", name: "Mirinda", available: true },
+];
 
 export class MenuStoreError extends Error {
   constructor(message, status = 500) {
@@ -61,6 +67,7 @@ export function publicImageUrl(imagePath) {
 
 // Same shape the website already uses (see src/menuApi.ts), so screens need no changes.
 function toItem(row) {
+  const options = toOptions(row.menu_item_options);
   return {
     id: row.id,
     category_id: row.category_id,
@@ -75,7 +82,7 @@ function toItem(row) {
     addon_name: row.addon_name,
     addon_price_paisa: row.addon_price_paisa,
     image_data: publicImageUrl(row.image_path),
-    options: toOptions(row.menu_item_options),
+    options: options.length ? options : row.name.trim().toLocaleLowerCase() === "cold drink" ? DEFAULT_COLD_DRINK_OPTIONS : [],
   };
 }
 

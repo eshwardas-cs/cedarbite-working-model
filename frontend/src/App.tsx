@@ -10,7 +10,7 @@ type MenuOption = { id: string; name: string; available: boolean };
 type Item = { id: number; category_id: number; name: string; description: string; price_paisa: number; price_display: string; available: boolean; quick_allowed: boolean; scheduled_allowed: boolean; prep_minutes: number | null; image_data?: string | null; addon_name?: string | null; addon_price_paisa?: number; options?: MenuOption[] };
 type Category = { id: number; name: string; items: Item[] };
 type MenuItemEditValues = Pick<Item, "category_id" | "name" | "description" | "price_paisa" | "quick_allowed" | "scheduled_allowed" | "prep_minutes" | "image_data" | "addon_name" | "addon_price_paisa" | "options">;
-type Order = { id: string | number; status: string; mode: string; total_display?: string; deal_discount_paisa?: number; pickup_code: string; created_at: string; completed_at?: string; cancelled_at?: string; refunded_at?: string; refund_method?: string; refund_status?: string; pickup_window?: { start_at: string; end_at: string } | null; items: { item_id?: number; option_id?: string; name: string; quantity: number; unit_price_paisa?: number }[]; waiting_minutes?: number; student_id?: string | null; customer_type?: "STUDENT" | "TEACHER"; customer_name?: string | null; payment_method?: string; payment_status?: string; deal_ids?: string[] };
+type Order = { id: string | number; status: string; mode: string; total_display?: string; deal_discount_paisa?: number; pickup_code: string; created_at: string; ready_at?: string; receipt_email_sent?: boolean; completed_at?: string; cancelled_at?: string; refunded_at?: string; refund_method?: string; refund_status?: string; pickup_window?: { start_at: string; end_at: string } | null; items: { item_id?: number; option_id?: string; name: string; quantity: number; unit_price_paisa?: number }[]; waiting_minutes?: number; student_id?: string | null; customer_type?: "STUDENT" | "TEACHER"; customer_name?: string | null; payment_method?: string; payment_status?: string; deal_ids?: string[] };
 type Deal = { id: string; title: string; description: string; active: boolean; item_ids?: number[]; price_paisa?: number | null };
 type SalesSummary = { date: string; generated_at: string; orders_placed: number; placed_order_value_paisa: number; pending_payment_orders: number; paid_orders: number; paid_sales_paisa: number; units_sold: number; items_sold: { name: string; quantity: number }[]; payment_methods: { method: string; count: number; amount_paisa: number }[]; hourly_sales: { hour: number; amount_paisa: number }[] };
 type MonthlySalesSummary = { month: string; generated_at: string; orders_placed: number; placed_order_value_paisa: number; pending_payment_orders: number; paid_orders: number; paid_sales_paisa: number; refunds: number; refunds_paisa: number; net_sales_paisa: number; units_sold: number; items_sold: { name: string; quantity: number }[]; payment_methods: { method: string; count: number; amount_paisa: number }[]; daily_breakdown: { date: string; orders_placed: number; paid_orders: number; paid_sales_paisa: number; units_sold: number; pending_payment_orders: number }[] };
@@ -18,6 +18,22 @@ type Page = "menu" | "orders" | "owner" | "stations" | "counter" | "cashdesk" | 
 type OrderMode = "quick" | "scheduled";
 type WalletEntry = { id: string | number; label: string; amount: number; kind: "credit" | "debit"; created_at: string; method: string };
 type WalletTopUpHistoryEntry = { id: string; student_id: string; amount_paisa: number; label: string; created_at: string; recorded_by?: string; method?: string; status?: string };
+
+const DEFAULT_COLD_DRINK_OPTIONS: MenuOption[] = [
+  { id: "drink-pepsi", name: "Pepsi", available: true },
+  { id: "drink-diet-pepsi", name: "Diet Pepsi", available: true },
+  { id: "drink-7up", name: "7UP", available: true },
+  { id: "drink-mirinda", name: "Mirinda", available: true },
+];
+
+function ensureColdDrinkOptions(categories: Category[]): Category[] {
+  return categories.map((category) => ({
+    ...category,
+    items: category.items.map((item) => item.name.trim().toLocaleLowerCase() === "cold drink" && !item.options?.length
+      ? { ...item, options: DEFAULT_COLD_DRINK_OPTIONS }
+      : item),
+  }));
+}
 
 function makeCartLineKey(itemId: number, optionId?: string, withAddon = false) {
   return `${itemId}${optionId ? `:option:${encodeURIComponent(optionId)}` : ""}${withAddon ? ":addon" : ""}`;
@@ -215,6 +231,12 @@ function createUuid() {
   const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+function vapidKeyBytes(value: string) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+type ReadyAlertState = "checking" | "unsupported" | "not-configured" | "install-required" | "blocked" | "off" | "on";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -232,6 +254,8 @@ export default function App() {
   const [menuLoadedRole, setMenuLoadedRoleState] = useState<string | null>(null);
   const setCategories = setCategoriesState;
   const [orders, setOrders] = useState<Order[]>([]);
+  const [readyAlertState, setReadyAlertState] = useState<ReadyAlertState>("checking");
+  const [readyAlertMessage, setReadyAlertMessage] = useState("");
   const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
   const [orderConfirmation, setOrderConfirmation] = useState<Order | null>(null);
   const [queue, setQueue] = useState<Order[]>([]);
@@ -436,7 +460,7 @@ export default function App() {
     // load finished last it used to overwrite the staff one and leave the screen on "loading".
     const requestId = ++menuLoadRequestRef.current;
     const isLatest = () => requestId === menuLoadRequestRef.current;
-    const setCategories = (next: Category[]) => { if (isLatest()) setCategoriesState(next); };
+    const setCategories = (next: Category[]) => { if (isLatest()) setCategoriesState(ensureColdDrinkOptions(next)); };
     const setMenuLoadedRole = (role: string) => { if (isLatest()) setMenuLoadedRoleState(role); };
     // The menu comes from Supabase first (when configured). The old sources below are the backup.
     try {
@@ -590,9 +614,79 @@ export default function App() {
     if (!token) return;
     try {
       const result = await request<{ orders: Order[] }>(`${SHARED_DATA_URL}?scope=my-orders`, { cache: "no-store", headers: { Authorization: `Bearer ${token}` } });
-      if (Array.isArray(result.orders)) setOrders(result.orders);
+      if (Array.isArray(result.orders)) { setOrders(result.orders); return result.orders; }
     } catch { /* Keep the orders already on screen; the next refresh tries again. */ }
   }, [request]);
+  const checkReadyAlerts = useCallback(async () => {
+    if (page !== "orders" || user?.source !== "supabase") return;
+    if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window) || !window.isSecureContext) {
+      setReadyAlertState("unsupported"); return;
+    }
+    if (Notification.permission === "denied") { setReadyAlertState("blocked"); return; }
+    try {
+      const config = await request<{ enabled: boolean; public_key: string | null }>(`${SHARED_DATA_URL}?scope=push-config`, { cache: "no-store" });
+      if (!config.enabled || !config.public_key) { setReadyAlertState("not-configured"); return; }
+      const standalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+      const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      if (ios && !standalone) { setReadyAlertState("install-required"); return; }
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      setReadyAlertState(subscription ? "on" : "off");
+    } catch { setReadyAlertState("not-configured"); }
+  }, [page, request, user?.source]);
+  async function enableReadyAlerts() {
+    setReadyAlertMessage("");
+    try {
+      if (!("Notification" in window)) { setReadyAlertState("unsupported"); return; }
+      const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+      if (permission !== "granted") { setReadyAlertState("blocked"); return; }
+      const config = await request<{ enabled: boolean; public_key: string | null }>(`${SHARED_DATA_URL}?scope=push-config`, { cache: "no-store" });
+      if (!config.enabled || !config.public_key) { setReadyAlertState("not-configured"); setReadyAlertMessage("Ready alerts are not configured on the server yet."); return; }
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error("Sign in again with your Cedar Google account to enable alerts.");
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKeyBytes(config.public_key) });
+      await request(SHARED_DATA_URL, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "subscribe-push", subscription: subscription.toJSON() }) });
+      setReadyAlertState("on");
+      setReadyAlertMessage("Ready alerts are on for this device.");
+    } catch (error) {
+      setReadyAlertMessage(error instanceof Error ? error.message : "Ready alerts could not be enabled.");
+      void checkReadyAlerts();
+    }
+  }
+  async function disableReadyAlerts() {
+    setReadyAlertMessage("");
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription && token) await request(SHARED_DATA_URL, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "unsubscribe-push", endpoint: subscription.endpoint }) });
+      await subscription?.unsubscribe();
+      setReadyAlertState("off");
+      setReadyAlertMessage("Ready alerts are off for this device.");
+    } catch (error) { setReadyAlertMessage(error instanceof Error ? error.message : "Ready alerts could not be turned off."); }
+  }
+  function askForReadyAlertsOnOrder() {
+    if (user?.source !== "supabase" || !("Notification" in window) || !("serviceWorker" in navigator) || !window.isSecureContext || Notification.permission !== "default") return;
+    // Start the permission prompt directly from the Place order gesture; declining never blocks the order.
+    void Notification.requestPermission().then(async (permission) => {
+      if (permission !== "granted") { setReadyAlertState("blocked"); return; }
+      const config = await request<{ enabled: boolean; public_key: string | null }>(`${SHARED_DATA_URL}?scope=push-config`, { cache: "no-store" });
+      if (!config.enabled || !config.public_key) { setReadyAlertState("not-configured"); return; }
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) return;
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription()
+        ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKeyBytes(config.public_key) });
+      await request(SHARED_DATA_URL, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "subscribe-push", subscription: subscription.toJSON() }) });
+      setReadyAlertState("on");
+    }).catch((error) => {
+      setReadyAlertMessage(error instanceof Error ? error.message : "Ready alerts could not be enabled.");
+    });
+  }
   async function cancelMyOrder(order: Order) {
     if (cancellingOrderId) return;
     if (!window.confirm(`Cancel order ${order.pickup_code}? This can't be undone.`)) return;
@@ -713,13 +807,25 @@ export default function App() {
     void loadMenu(Boolean(user?.permissions.includes("menu.manage") || user?.permissions.includes("availability.toggle")));
   }, [user, page, loadMenu, loadMyOrders, loadOrders, loadQueue, loadWallet]);
   useEffect(() => {
-    // Keep a Google user's order progress up to date while they look at "My orders".
-    if (page !== "orders" || user?.source !== "supabase") return;
-    const refresh = () => { if (!document.hidden) void loadMyOrders(); };
+    // Keep order progress current while the student browses so a ready order can raise an in-site alert.
+    if (user?.source !== "supabase") return;
+    let previous: Map<string, string> | null = null;
+    const refresh = async () => {
+      if (document.hidden) return;
+      const fresh = await loadMyOrders();
+      if (!fresh) return;
+      if (previous) {
+        const ready = fresh.find((order) => order.status === "READY" && previous?.get(String(order.id)) !== "READY");
+        if (ready && page !== "orders" && (!("Notification" in window) || Notification.permission !== "granted")) setToast(`Your order ${ready.pickup_code} is ready to collect!`);
+      }
+      previous = new Map(fresh.map((order) => [String(order.id), order.status]));
+    };
+    void refresh();
     const timer = window.setInterval(refresh, 10_000);
     document.addEventListener("visibilitychange", refresh);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
   }, [loadMyOrders, page, user?.source]);
+  useEffect(() => { void checkReadyAlerts(); }, [checkReadyAlerts]);
   useEffect(() => { storageSet("local", "cedarbite-preview-deals", JSON.stringify(deals)); }, [deals]);
   useEffect(() => {
     void request<{ deals: Deal[] | null }>(`${SHARED_DATA_URL}?scope=deals`, { cache: "no-store" }).then((result) => {
@@ -1022,6 +1128,7 @@ export default function App() {
       return;
     }
     if (paymentMethod === "wallet" && walletBalance < cartTotal) { setToast("Your wallet balance is too low. Add wallet balance to continue."); setWalletOpen(true); return; }
+    askForReadyAlertsOnOrder();
     orderSubmittingRef.current = true;
     setOrderSubmitting(true);
     setOrderError("");
@@ -1476,17 +1583,20 @@ export default function App() {
 
   if (page === "menu" && !menuReady) return <AppLoadingScreen/>;
   if (page === "stations") return <StationDirectory onNavigate={(next) => navigate(next)} onBack={() => navigate("menu")} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)}/>;
-  if (page === "counter") return !menuReady ? <AppLoadingScreen/> : <CounterStation user={user} categories={categories} items={items} pending={orderSubmitting} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} onSignIn={(username, password) => demoStaffSignIn(username, password, "order_taker")} onSignOut={() => void signOut()} onReturnToActive={returnToActiveStation} onChangePassword={changeStaffPassword} onCreate={async (customer, selections, addonSelections, optionSelections) => {
-    const selected = items.filter((item) => selections[item.id] > 0);
-    if (!selected.length) throw new Error("Add at least one menu item.");
-    const total = selected.reduce((sum, item) => sum + (item.price_paisa + (addonSelections[item.id] ? item.addon_price_paisa ?? 0 : 0)) * selections[item.id], 0);
+  if (page === "counter") return !menuReady ? <AppLoadingScreen/> : <CounterStation user={user} categories={categories} items={items} pending={orderSubmitting} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} onSignIn={(username, password) => demoStaffSignIn(username, password, "order_taker")} onSignOut={() => void signOut()} onReturnToActive={returnToActiveStation} onChangePassword={changeStaffPassword} onCreate={async (customer, lines) => {
+    if (!lines.length) throw new Error("Add at least one menu item.");
+    const total = lines.reduce((sum, line) => {
+      const item = items.find((entry) => entry.id === line.item_id);
+      if (!item) return sum;
+      return sum + (item.price_paisa + (line.addon_selected ? item.addon_price_paisa ?? 0 : 0)) * line.quantity;
+    }, 0);
     const pickupCode = `CB${createUuid().replaceAll("-", "").slice(0, 6).toUpperCase()}`;
-    const order = { id: createUuid(), pickup_code: pickupCode, mode: "QUICK", ...customer, total_display: money(total), pickup_window: null, payment_method: "cash", items: selected.map((item) => { const addon_selected = Boolean(addonSelections[item.id] && item.addon_name); const option = item.options?.find((entry) => entry.id === optionSelections[item.id]); const unit_price_paisa = item.price_paisa + (addon_selected ? item.addon_price_paisa ?? 0 : 0); return { item_id: item.id, ...(option ? { option_id: option.id } : {}), name: `${item.name}${option ? ` · ${option.name}` : ""}`, quantity: selections[item.id], addon_selected, unit_price_paisa }; }) };
+    const order = { id: createUuid(), pickup_code: pickupCode, mode: "QUICK", ...customer, total_display: money(total), pickup_window: null, payment_method: "cash", items: lines.map((line) => { const item = items.find((entry) => entry.id === line.item_id)!; const option = item.options?.find((entry) => entry.id === line.option_id); const addon_selected = Boolean(line.addon_selected && item.addon_name); const unit_price_paisa = item.price_paisa + (addon_selected ? item.addon_price_paisa ?? 0 : 0); return { item_id: item.id, ...(option ? { option_id: option.id } : {}), name: `${item.name}${option ? ` · ${option.name}` : ""}`, quantity: line.quantity, addon_selected, unit_price_paisa }; }) };
     return submitCounterOrder(order);
   }}/>
   if (["owner", "order-manager", "cashdesk"].includes(page)) return !menuReady ? <AppLoadingScreen/> : <OwnerApp station={page === "cashdesk" ? "cashier" : "order_manager"} user={user} googleReady={googleReady} categories={categories} items={items} queue={queue} orderHistory={orderHistory} salesSummary={salesSummary} salesSummaryDates={salesSummaryDates} salesSummaryError={salesSummaryError} salesSummaryLoading={salesSummaryLoading} onLoadSalesSummary={(date) => void loadSalesSummary(date)} onLoadSalesDates={() => void loadSalesSummaryDates()} onDeleteSalesSummary={deleteSalesSummary} monthlySalesSummary={monthlySalesSummary} monthlySalesMonths={monthlySalesMonths} monthlySalesError={monthlySalesError} monthlySalesLoading={monthlySalesLoading} onLoadMonthlySalesMonths={() => void loadMonthlySalesMonths()} onLoadMonthlySalesSummary={(month) => void loadMonthlySalesSummary(month)} walletTopUpHistory={walletTopUpHistory} walletHistoryError={walletHistoryError} walletHistoryLoading={walletHistoryLoading} onLoadHistory={() => void loadOrderHistory()} onLoadWalletTopUpHistory={() => void loadWalletTopUpHistory()} queuePendingIds={queuePendingIds} deals={deals} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} canManage={canManage} canSortMenu={user?.role === "DEMO_CANTEEN"} onReorderMenuItems={reorderMenuItems} onReorderMenuCategories={reorderMenuCategories} canToggle={canToggle} availabilityPending={availabilityPending} menuMutationPending={menuMutationPending} itemAddPending={itemAddPending} canQueue={canQueue} canTopUp={user?.permissions.includes("wallet.cash_topup") ?? false} walletMessage={walletMessage} walletPending={cashTopUpPending} onCashTopUp={cashWalletTopUp} itemMessage={itemMessage} dealMessage={dealMessage} onSignIn={startSignIn} onDemoStaff={(username, password, station) => demoStaffSignIn(username, password, station)} onSignOut={() => void signOut()} onReturnToActive={returnToActiveStation} onBack={() => navigate("menu")} onToggle={toggleAvailability} onPrice={(item, form) => void changePrice(item, form)} onAddCategory={(form) => void addCategory(form)} onRemoveCategory={removeCategory} onAddItem={(event) => void addItem(event)} onRemoveItem={removeMenuItem} onUpdateItem={updateMenuItem} onAdvance={(order) => void advanceOrder(order)} onDeleteOrder={(order) => void deleteOrder(order)} onDeleteHistoryOrder={(order) => void deleteHistoryOrder(order)} onRefundHistoryOrder={(order) => void refundHistoryOrder(order)} onMarkCashPaid={markCashPaid} onChangePassword={changeStaffPassword} onResetPassword={resetStaffPassword} onToggleOrdering={() => void toggleOrdering()} onDeal={saveDeal} onDealToggle={(id) => void toggleDeal(id)} onRefresh={() => { void loadMenu(user?.role !== "DEMO_CANTEEN"); void loadQueue(); void loadOrderHistory(); void loadWalletTopUpHistory(); void loadWallet(); if (user?.role === "DEMO_CANTEEN") void loadSharedAvailability(); }} orderingReason={orderingReason} />;
   if (page === "kitchen") return <KitchenStation user={user} queue={queue} pendingIds={queuePendingIds} darkMode={darkMode} onToggleTheme={() => setDarkMode((dark) => !dark)} onSignIn={(username, password) => demoStaffSignIn(username, password, "kitchen")} onSignOut={() => void signOut()} onReturnToActive={returnToActiveStation} onChangePassword={changeStaffPassword}/>;
-  if (page === "confirmation") return <main className="order-confirmation-page"><section className="order-confirmation-page-card"><div className="confirmation-check" aria-hidden="true">✓</div><span className="section-kicker">ORDER CONFIRMED</span><h1>Your order was placed successfully.</h1><div className="confirmation-pickup"><small>PICKUP NUMBER</small><strong>{orderConfirmation?.pickup_code ?? "—"}</strong></div><button className="blue-button" onClick={() => navigate("menu")}>← Return to menu</button></section></main>;
+  if (page === "confirmation") return <main className="order-confirmation-page"><section className="order-confirmation-page-card"><div className="confirmation-check" aria-hidden="true">✓</div><span className="section-kicker">ORDER CONFIRMED</span><h1>Your order was placed successfully.</h1><div className="confirmation-pickup"><small>PICKUP NUMBER</small><strong>{orderConfirmation?.pickup_code ?? "—"}</strong></div>{orderConfirmation?.receipt_email_sent === true ? <p className="receipt-email-note">Your receipt was sent to {user?.email}.</p> : <p className="receipt-email-note">Your order is saved. The receipt email is being retried; you can check progress in My Orders.</p>}<button className="blue-button" onClick={() => navigate("menu")}>← Return to menu</button></section></main>;
 
   return <div className="storefront">
     <header className={`store-header ${mobileMenuOpen ? "menu-open" : ""}`}>
@@ -1497,7 +1607,7 @@ export default function App() {
     <div className="header-actions"><button className="wallet-header" onClick={() => { setMobileMenuOpen(false); if (user?.role === "DEMO_STUDENT") setWalletOpen(true); else if (user) setToast("The wallet isn't connected yet. It moves to Supabase in a later step."); else loginDialog.current?.showModal(); }}><span>Wallet</span><b>{user?.role === "DEMO_STUDENT" ? money(walletBalance) : user ? "Soon" : "—"}</b></button><button className="basket-header" aria-label={`Open bucket, ${cartCount} items`} onClick={() => { setMobileMenuOpen(false); setCartOpen(true); }}><span className="basket-symbol">▣</span><span>Bucket</span><b>{cartCount}</b></button>{canManage && <button className="owner-entry" onClick={() => navigate("owner")}>Canteen console <span>↗</span></button>}{user ? <button className="sign-button" onClick={() => { setMobileMenuOpen(false); void signOut(); }}>{user.student_id ? `ID ${user.student_id}` : human(user.role)} · Sign out</button> : <button className="sign-button" onClick={() => { setMobileMenuOpen(false); loginDialog.current?.showModal(); }}>Login <span>↗</span></button>}<ThemeSwitch darkMode={darkMode} onToggle={() => setDarkMode((dark) => !dark)} className="mobile-menu-theme-toggle"/></div>
   </div>
 </header>
-    {page === "orders" ? <main className="orders-page"><div className="page-kicker">YOUR CEDARBITE ACCOUNT</div><h1>My orders</h1><p className="page-lead">Orders appear here with their pickup code and progress.</p>{orders.length ? <div className="order-list">{orders.map((order) => <OrderCard key={order.id} order={order} cancelling={cancellingOrderId === String(order.id)} onCancel={user?.source === "supabase" && order.status === "SUBMITTED" && order.payment_status !== "PAID" ? () => void cancelMyOrder(order) : undefined} />)}</div> : <div className="empty-state"><span>◷</span><h2>No orders yet</h2><p>Choose an item from the menu to see it appear here.</p><button className="blue-button" onClick={() => navigate("menu")}>Browse menu</button></div>}</main> : page === "team" ? <TeamPage/> : page === "about" || page === "privacy" || page === "contact" ? <InfoPage page={page}/> : <main>
+    {page === "orders" ? <main className="orders-page"><div className="page-kicker">YOUR CEDARBITE ACCOUNT</div><h1>My orders</h1><p className="page-lead">Orders appear here with their pickup code and progress.</p><section className="ready-alert-settings"><div><b>Get an alert when your order is ready</b><p>{readyAlertMessage || (readyAlertState === "on" ? "Ready alerts are on for this device." : readyAlertState === "blocked" ? "Notifications are blocked in your browser settings. You can still check order updates here." : readyAlertState === "unsupported" ? "This browser does not support ready alerts. Check My Orders for updates." : readyAlertState === "install-required" ? "On iPhone or iPad, add CedarBite to your Home Screen to enable notifications." : readyAlertState === "not-configured" ? "Ready alerts are not available right now. Check My Orders for updates." : "We can notify you on this device when the canteen marks your order ready.")}</p></div>{readyAlertState === "on" ? <button type="button" onClick={() => void disableReadyAlerts()}>Turn off</button> : <button type="button" onClick={() => void enableReadyAlerts()} disabled={readyAlertState === "unsupported" || readyAlertState === "install-required" || readyAlertState === "not-configured"}>Turn on alerts</button>}</section>{orders.some((order) => order.status === "READY") && <div className="order-ready-banner" role="status"><b>Your order is ready to collect!</b><span>Show your pickup number to the canteen staff.</span></div>}{orders.length ? <div className="order-list">{orders.map((order) => <OrderCard key={order.id} order={order} cancelling={cancellingOrderId === String(order.id)} onCancel={user?.source === "supabase" && order.status === "SUBMITTED" && order.payment_status !== "PAID" ? () => void cancelMyOrder(order) : undefined} />)}</div> : <div className="empty-state"><span>◷</span><h2>No orders yet</h2><p>Choose an item from the menu to see it appear here.</p><button className="blue-button" onClick={() => navigate("menu")}>Browse menu</button></div>}</main> : page === "team" ? <TeamPage/> : page === "about" || page === "privacy" || page === "contact" ? <InfoPage page={page}/> : <main>
       <section className="unified-order-note"><span className="section-kicker">ONE MENU · PICKUP HANDLED AUTOMATICALLY</span><b>Choose what you want. We’ll guide the pickup.</b><p>Ready items need no time slot. If your bucket includes food that needs preparation, choose its pickup window in the bucket.</p></section>
       <section className="promo-hero"><div className="hero-copy"><span className="yellow-pill"><span className="hero-pill-dot"/> CEDAR COLLEGE CANTEEN</span><h1>Your break,<br/><span>your moment.</span></h1><p>Find a favourite and build your bucket. Pickup details adjust automatically to your items.</p><button className="yellow-button" onClick={() => document.getElementById("menu")?.scrollIntoView({ behavior: "smooth" })}>Explore the menu <span>↓</span></button><div className="preview-note">Discover the menu, made for your campus break.</div><div className="hero-features"><span><b>01</b> Quick pickup</span><span><b>02</b> Scheduled food</span><span><b>03</b> One easy bucket</span></div></div><div className="hero-food" aria-hidden="true"><div className="food-sun"/><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-plate"><span>🍔</span><span>🍟</span><span>🥤</span></div><div className="hero-sticker"><small>MADE FOR</small><b>YOUR BREAK</b><i>CEDARBITES · GOOD VIBES</i></div><div className="hero-spark">✦</div><div className="hero-floating-card"><span>✦</span><b>Choose.<br/>Collect.<br/>Enjoy.</b></div></div><div className="hero-ribbon"><span>QUICK PICKUP</span><i>•</i><span>SCHEDULED PICKUP</span><i>•</i><span>MADE FOR YOUR BREAK</span></div></section>
       {deals.some((deal) => deal.active) && <section className="deals-section" id="deals"><div className="deals-title"><div><span className="section-kicker">GOOD THINGS TO LOOK FOR</span><h2>Break-time <span>deals</span></h2></div><small>Canteen favourites · featured picks</small></div><div className="deal-grid">{deals.filter((deal) => deal.active).slice(0, 3).map((deal, index) => <button type="button" className={`deal-tile deal-tone-${index % 3}`} key={deal.id} onClick={() => setSelectedDeal(deal)} aria-label={`View deal: ${deal.title}`}><span className="deal-icon">{index % 2 ? "✦" : "★"}</span><span className="deal-tile-copy"><span className="deal-label">FEATURED DEAL · VIEW DETAILS</span><h3>{deal.title}</h3><span className="deal-summary">{deal.description}{deal.price_paisa != null ? ` · ${money(Math.min(deal.price_paisa, dealItemsFor(deal).reduce((sum, item) => sum + item.price_paisa, 0)))}` : ""}</span></span><span className="deal-arrow">↗</span></button>)}</div></section>}
@@ -1512,7 +1622,7 @@ export default function App() {
     {cartOpen && <div className="cart-scrim" onClick={() => setCartOpen(false)}><aside className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Your bucket"><div className="cart-head"><div><span className="section-kicker">YOUR ORDER</span><h2>Your bucket <small>({cartCount})</small></h2></div><button onClick={() => setCartOpen(false)} aria-label="Close bucket">×</button></div><div className="cart-service"><b>Pickup</b><span>{cartRequiresSchedule ? "Your bucket has prepared food. Choose a pickup window below." : "Ready-to-collect items · no time slot needed"}</span></div>{orderMode === "scheduled" && <label className="bucket-window">Choose your pickup slot<select value={selectedWindow} onChange={(event) => setSelectedWindow(event.target.value)}><option value="">{availablePickupWindows.length ? "Choose from the next available pickup slots" : "No pickup slots are available right now"}</option>{availablePickupWindows.slice(0, 6).map((window) => <option key={window.id} value={window.id}>{new Date(window.start_at).toLocaleString("en-PK", { timeZone:"Asia/Karachi", weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit" })} – {formatPickupTime(window.end_at)}</option>)}</select></label>}<div className="cart-lines">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([key, quantity]) => { const { itemId, optionId, withAddon } = readCartLineKey(key); const item = items.find((entry) => entry.id === itemId); if (!item) return null; const option = item.options?.find((entry) => entry.id === optionId); const unitPrice = item.price_paisa + (withAddon ? item.addon_price_paisa ?? 0 : 0); const lineName = `${item.name.replace("[DEV SAMPLE] ", "")}${option ? ` · ${option.name}` : ""}${withAddon && item.addon_name ? ` + ${item.addon_name}` : ""}`; return <div className="cart-line" key={key}><div><b>{lineName}</b><small>{money(unitPrice)} each{withAddon ? " · add-on included" : ""}</small></div><div className="quantity-controls"><button onClick={() => addToCart(item.id, -1, withAddon, optionId)} aria-label={`Remove one ${lineName}`}>−</button><b>{quantity}</b><button onClick={() => addToCart(item.id, 1, withAddon, optionId)} aria-label={`Add one ${lineName}`}>+</button></div><strong>{money(unitPrice * quantity)}</strong></div>; })}{!cartCount && <div className="cart-empty"><span>▣</span><h3>Your bucket is empty</h3><p>Add a menu item to start building your order.</p><button className="blue-button" onClick={() => { setCartOpen(false); document.getElementById("menu")?.scrollIntoView({behavior:"smooth"}); }}>Browse menu</button></div>}</div><div className="cart-bottom"><div className="cart-total"><span>Items total</span><b>{cartCount}</b></div>{cartDealSavings > 0 && <div className="cart-total deal-savings-row"><span>Deal savings</span><b>−{money(cartDealSavings)}</b></div>}<div className="cart-total"><span>Total</span><b>{money(cartTotal)}</b></div><label className="demo-payment">Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="cash">Cash at pickup</option></select></label><p className="checkout-hint">Review your items and pickup details before placing the order.</p>{orderError && <p className="order-error" role="alert">{orderError}</p>}<button className="checkout-button" disabled={!cartCount || orderSubmitting || !canOrder || (orderMode === "scheduled" && !selectedWindow)} onClick={placeDemoOrder}>{orderSubmitting ? "Sending order…" : canOrder ? "Place order" : "Sign in to place an order"}</button>{!canOrder && <button className="cart-signin" onClick={() => loginDialog.current?.showModal()}>Sign in with your Cedar email</button>}</div></aside></div>}
     <dialog className="signin-dialog" ref={loginDialog}><button className="dialog-x" onClick={() => loginDialog.current?.close()} aria-label="Close sign in">×</button><CedarMark/><span className="section-kicker">WELCOME TO CEDARBITE</span><h2>Sign in with your<br/><span>cedar email</span></h2><p>Sign in with your Cedar College email to access student ordering and wallet features.</p>{googleReady ? <button className="google-button" onClick={startSignIn}><GoogleIcon/> Sign in with Google account</button> : <form className="demo-signin-form" onSubmit={(event) => { event.preventDefault(); demoSignIn(demoEmail); }}><label>Cedar email<input type="email" required value={demoEmail} onChange={(event) => setDemoEmail(event.target.value)} placeholder="your.email@cedar.edu.pk"/></label><button className="google-button">Continue with Cedar email</button><small>Cedar College account</small></form>}<small className="secure-hint">Your profile and wallet activity are saved in this browser.</small></dialog>
     {walletOpen && <div className="wallet-scrim" onClick={() => setWalletOpen(false)}><section className="wallet-panel" role="dialog" aria-modal="true" aria-labelledby="wallet-title" onClick={(event) => event.stopPropagation()}><div className="cart-head"><div><span className="section-kicker">CEDARBITE WALLET</span><h2 id="wallet-title">Your wallet</h2></div><button onClick={() => setWalletOpen(false)} aria-label="Close wallet">×</button></div><div className="wallet-balance"><span>Available balance</span><b>{money(walletBalance)}</b><small>{user?.role === "DEMO_STUDENT" ? "Wallet balance saved in this browser" : user?.role === "student" || user?.role === "staff_customer" ? "Shared account balance" : "Sign in with your Cedar account to view your wallet"}</small></div>{user?.role === "DEMO_STUDENT" ? <><label className="demo-payment">Top-up amount (PKR)<input type="number" min="100" max="5000" step="50" value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)}/></label><label className="demo-payment">Top up using<select value={topUpMethod} onChange={(event) => setTopUpMethod(event.target.value)}><option value="easypaisa">EasyPaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank transfer</option><option value="card">Card</option></select></label><p className="wallet-note">Online payment providers are not connected. A wallet balance added here is not backed by a verified payment.</p><button className="blue-button wallet-topup" onClick={() => void demoTopUp()} disabled={topUpSubmitting}>{topUpSubmitting ? "Updating wallet…" : "Add wallet balance"}</button></> : <p className="wallet-note">To add cash to this wallet, give the money to canteen staff and ask them to record it against your student ID.</p>}<h3>Recent wallet activity</h3>{walletEntries.length ? <div className="wallet-history">{walletEntries.slice(0,5).map((entry) => <div key={entry.id}><span><b>{entry.label}</b><small>{new Date(entry.created_at).toLocaleString()} · {entry.method}</small></span><strong className={entry.kind}>{entry.kind === "credit" ? "+" : "−"}{money(entry.amount)}</strong></div>)}</div> : <p className="wallet-empty">No wallet activity yet.</p>}</section></div>}
-    {showOrderConfirmation && orderConfirmation && <div className="order-confirmation-scrim"><section className="order-confirmation" role="dialog" aria-modal="true" aria-labelledby="order-success-title" aria-describedby="order-success-description"><CedarMark/><div className="confirmation-check" aria-hidden="true">✓</div><span className="section-kicker">ORDER PLACED SUCCESSFULLY</span><h2 id="order-success-title">Your order is confirmed.</h2><p id="order-success-description">Show this pickup number to the canteen staff when you collect your order.</p><div className="confirmation-pickup"><small>PICKUP NUMBER</small><strong>{orderConfirmation.pickup_code}</strong></div><button className="blue-button" autoFocus onClick={() => { setShowOrderConfirmation(false); navigate("menu"); }}>Return to menu</button></section></div>}
+    {showOrderConfirmation && orderConfirmation && <div className="order-confirmation-scrim"><section className="order-confirmation" role="dialog" aria-modal="true" aria-labelledby="order-success-title" aria-describedby="order-success-description"><CedarMark/><div className="confirmation-check" aria-hidden="true">✓</div><span className="section-kicker">ORDER PLACED SUCCESSFULLY</span><h2 id="order-success-title">Your order is confirmed.</h2><p id="order-success-description">Show this pickup number to the canteen staff when you collect your order.</p><div className="confirmation-pickup"><small>PICKUP NUMBER</small><strong>{orderConfirmation.pickup_code}</strong></div><p className="receipt-email-note">{orderConfirmation.receipt_email_sent === true ? `Receipt sent to ${user?.email}.` : "Your order is saved. The receipt email is being retried; you can check progress in My Orders."}</p><button className="blue-button" autoFocus onClick={() => { setShowOrderConfirmation(false); navigate("menu"); }}>Return to menu</button></section></div>}
     {toast && <div className="toast-message" role="status">{toast}<button onClick={() => setToast("")}>×</button></div>}
   </div>;
 }
@@ -1730,22 +1840,78 @@ function StationSwitchPrompt({ activeStation, activeUser, targetStation, onSignO
   return <div className="station-switch-scrim"><section className="station-switch-dialog" role="dialog" aria-modal="true" aria-labelledby="station-switch-title"><div className="station-switch-icon" aria-hidden="true">↔</div><span className="section-kicker">ACCOUNT ALREADY SIGNED IN</span><h2 id="station-switch-title">Sign out before switching?</h2><p>This browser is signed in to <b>{activeName}</b>. Sign out before entering credentials for <b>{stationName(targetStation)}</b> to avoid a session conflict.</p><button className="blue-button" onClick={onSignOut}>Sign out and continue</button><button className="station-switch-return" onClick={onReturn}>Return to {activeName}</button></section></div>;
 }
 
-function CounterStation({ user, categories, items, pending, darkMode, onToggleTheme, onSignIn, onSignOut, onReturnToActive, onChangePassword, onCreate }: { user: User | null; categories: Category[]; items: Item[]; pending: boolean; darkMode: boolean; onToggleTheme: () => void; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void; onReturnToActive: () => void; onChangePassword: (password: string) => Promise<void>; onCreate: (customer: { customer_type: "STUDENT" | "TEACHER"; student_id: string | null; customer_name: string | null }, quantities: Record<number, number>, addonSelections: Record<number, boolean>, optionSelections: Record<number, string>) => Promise<Order> }) {
+function CounterStation({ user, categories, items, pending, darkMode, onToggleTheme, onSignIn, onSignOut, onReturnToActive, onChangePassword, onCreate }: { user: User | null; categories: Category[]; items: Item[]; pending: boolean; darkMode: boolean; onToggleTheme: () => void; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void; onReturnToActive: () => void; onChangePassword: (password: string) => Promise<void>; onCreate: (customer: { customer_type: "STUDENT" | "TEACHER"; student_id: string | null; customer_name: string | null }, lines: { item_id: number; option_id?: string; quantity: number; addon_selected: boolean }[]) => Promise<Order> }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [quantities, setQuantities] = useState<Record<number, number>>({});
-  const [addonSelections, setAddonSelections] = useState<Record<number, boolean>>({});
-  const [optionSelections, setOptionSelections] = useState<Record<number, string>>({});
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [addonSelections, setAddonSelections] = useState<Record<string, boolean>>({});
+  const [optionPromptItem, setOptionPromptItem] = useState<Item | null>(null);
+  const [optionDraftQuantities, setOptionDraftQuantities] = useState<Record<string, number>>({});
+  const [optionDraftAddons, setOptionDraftAddons] = useState<Record<string, boolean>>({});
+  const [counterCategoryId, setCounterCategoryId] = useState<number | "all">("all");
   const [customerType, setCustomerType] = useState<"STUDENT" | "TEACHER">("STUDENT");
   const [pickupId, setPickupId] = useState("");
   const [success, setSuccess] = useState("");
   const [receiptRequest, setReceiptRequest] = useState<{ order: Order; key: string } | null>(null);
+  const placeOrderButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [showJumpToOrder, setShowJumpToOrder] = useState(false);
   useAutoPrintReceipt(receiptRequest);
   const stationUser = user?.role === "DEMO_CANTEEN" && storageGet("session", CANTEEN_ROLE_KEY) === "order_taker";
   const activeStation = storageGet("session", CANTEEN_ROLE_KEY);
   const stationConflict = Boolean((activeStation && activeStation !== "order_taker") || (user && (user.role !== "DEMO_CANTEEN" || activeStation !== "order_taker")));
-  const visibleCategories = categories.map((category) => ({ ...category, items: category.items.filter((item) => item.available && item.quick_allowed) })).filter((category) => category.items.length > 0);
+  const visibleCategories = categories.map((category) => ({ ...category, items: category.items.filter((item) => item.available && (item.quick_allowed || item.scheduled_allowed)) })).filter((category) => category.items.length > 0);
+  const listedCategories = counterCategoryId === "all" ? visibleCategories : visibleCategories.filter((category) => category.id === counterCategoryId);
+  const lineKey = (itemId: number, optionId?: string) => `${itemId}::${optionId ?? ""}`;
+  const optionSummary = (item: Item) => (item.options ?? []).filter((option) => option.available && (quantities[lineKey(item.id, option.id)] ?? 0) > 0).map((option) => `${option.name} × ${quantities[lineKey(item.id, option.id)]}`).join(" · ");
+  function openOptionPrompt(item: Item) {
+    setOptionDraftQuantities(Object.fromEntries((item.options ?? []).map((option) => [lineKey(item.id, option.id), option.available ? quantities[lineKey(item.id, option.id)] ?? 0 : 0])));
+    setOptionDraftAddons(Object.fromEntries((item.options ?? []).map((option) => [lineKey(item.id, option.id), option.available && Boolean(addonSelections[lineKey(item.id, option.id)])])));
+    setOptionPromptItem(item);
+  }
+  function saveOptionPrompt() {
+    if (!optionPromptItem) return;
+    setQuantities((current) => { const next = { ...current }; for (const option of optionPromptItem.options ?? []) next[lineKey(optionPromptItem.id, option.id)] = option.available ? optionDraftQuantities[lineKey(optionPromptItem.id, option.id)] ?? 0 : 0; return next; });
+    setAddonSelections((current) => { const next = { ...current }; for (const option of optionPromptItem.options ?? []) next[lineKey(optionPromptItem.id, option.id)] = option.available && Boolean(optionDraftAddons[lineKey(optionPromptItem.id, option.id)]); return next; });
+    setOptionPromptItem(null);
+  }
+  const selectedCount = Object.values(quantities).reduce((sum, count) => sum + count, 0);
+  useEffect(() => {
+    const button = placeOrderButtonRef.current;
+    if (!stationUser || selectedCount === 0 || !button || success) {
+      setShowJumpToOrder(false);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setShowJumpToOrder(!entry.isIntersecting), {
+      threshold: 0.15,
+      rootMargin: "0px 0px -24px 0px",
+    });
+    observer.observe(button);
+    return () => observer.disconnect();
+  }, [selectedCount, stationUser, success]);
+  const jumpToPlaceOrder = () => placeOrderButtonRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  const orderTotal = items.reduce((sum, item) => {
+    const options = item.options ?? [];
+    if (options.length) return sum + options.filter((option) => option.available).reduce((itemSum, option) => { const key = lineKey(item.id, option.id); return itemSum + (item.price_paisa + (addonSelections[key] && item.addon_name ? item.addon_price_paisa ?? 0 : 0)) * (quantities[key] ?? 0); }, 0);
+    const key = lineKey(item.id);
+    return sum + (item.price_paisa + (addonSelections[key] && item.addon_name ? item.addon_price_paisa ?? 0 : 0)) * (quantities[key] ?? 0);
+  }, 0);
+  const orderLines = items.flatMap((item) => {
+    const availableOptions = item.options?.filter((option) => option.available) ?? [];
+    const choices = item.options?.length ? availableOptions.map((option) => ({ option_id: option.id, key: lineKey(item.id, option.id) })) : [{ option_id: undefined, key: lineKey(item.id) }];
+    return choices.flatMap((choice) => (quantities[choice.key] ?? 0) > 0 ? [{ item_id: item.id, ...(choice.option_id ? { option_id: choice.option_id } : {}), quantity: quantities[choice.key], addon_selected: Boolean(addonSelections[choice.key] && item.addon_name) }] : []);
+  });
+  const quantityControl = (item: Item, optionId?: string) => {
+    const key = lineKey(item.id, optionId);
+    const quantity = quantities[key] ?? 0;
+    const choiceName = optionId ? item.options?.find((option) => option.id === optionId)?.name : item.name;
+    return <div className="counter-quantity-control"><button type="button" disabled={quantity <= 0} onClick={() => setQuantities((current) => ({ ...current, [key]: Math.max(0, (current[key] ?? 0) - 1) }))} aria-label={`Remove one ${choiceName}`}>−</button><input type="number" min="0" max="20" value={quantity} onChange={(event) => setQuantities((current) => ({ ...current, [key]: Math.min(20, Math.max(0, Number(event.target.value))) }))} aria-label={`Quantity for ${choiceName}`}/><button type="button" disabled={quantity >= 20} onClick={() => setQuantities((current) => ({ ...current, [key]: Math.min(20, (current[key] ?? 0) + 1) }))} aria-label={`Add one ${choiceName}`}>+</button></div>;
+  };
+  const optionDraftControl = (item: Item, option: MenuOption) => {
+    const key = lineKey(item.id, option.id);
+    const quantity = optionDraftQuantities[key] ?? 0;
+    return <div className="counter-quantity-control"><button type="button" disabled={quantity <= 0} onClick={() => setOptionDraftQuantities((current) => ({ ...current, [key]: Math.max(0, (current[key] ?? 0) - 1) }))} aria-label={`Remove one ${option.name}`}>−</button><input type="number" min="0" max="20" value={quantity} onChange={(event) => setOptionDraftQuantities((current) => ({ ...current, [key]: Math.min(20, Math.max(0, Number(event.target.value))) }))} aria-label={`Quantity for ${option.name}`}/><button type="button" disabled={quantity >= 20} onClick={() => setOptionDraftQuantities((current) => ({ ...current, [key]: Math.min(20, (current[key] ?? 0) + 1) }))} aria-label={`Add one ${option.name}`}>+</button></div>;
+  };
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(""); setSuccess("");
     const formElement = event.currentTarget;
@@ -1754,13 +1920,12 @@ function CounterStation({ user, categories, items, pending, darkMode, onToggleTh
     const teacherName = String(form.get("teacher_name") ?? "").trim();
     if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId)) { setError("Enter the student’s 7-digit Cedar ID."); return; }
     if (customerType === "TEACHER" && (!teacherName || teacherName.length > 100)) { setError("Enter the teacher’s name (up to 100 characters)."); return; }
-    const selected = items.filter((item) => quantities[item.id] > 0);
-    if (selected.some((item) => item.options?.length && !item.options.some((option) => option.id === optionSelections[item.id] && option.available))) { setError("Choose an available option for each selected item."); return; }
+    if (!orderLines.length) { setError("Add at least one menu item."); return; }
     const customer = { customer_type: customerType, student_id: customerType === "STUDENT" ? studentId : null, customer_name: customerType === "TEACHER" ? teacherName : null };
-    try { const order = await onCreate(customer, quantities, addonSelections, optionSelections); setPickupId(order.pickup_code); setSuccess("In-person order sent to the canteen queue."); setReceiptRequest({ order, key: createUuid() }); setQuantities({}); setAddonSelections({}); setOptionSelections({}); formElement.reset(); setCustomerType("STUDENT"); }
+    try { const order = await onCreate(customer, orderLines); setPickupId(order.pickup_code); setSuccess("In-person order sent to the canteen queue."); setReceiptRequest({ order, key: createUuid() }); setQuantities({}); setAddonSelections({}); formElement.reset(); setCustomerType("STUDENT"); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "The order could not be placed."); }
   }
-  return <><main className="stations-page station-workspace"><div className="station-topline"><a href="/stations">← All staff stations</a><div className="station-top-actions">{stationUser && <ChangePasswordForm station="order_taker" onChange={onChangePassword}/>}{stationUser && <button onClick={onSignOut}>Sign out</button>}<ThemeSwitch darkMode={darkMode} onToggle={onToggleTheme} className="station-theme-toggle"/></div></div><span className="section-kicker">COUNTER · IN-PERSON ORDERS</span><h1>Counter station</h1>{stationConflict ? <StationSwitchPrompt activeStation={activeStation} activeUser={user} targetStation="order_taker" onSignOut={onSignOut} onReturn={onReturnToActive}/> : !stationUser ? <form className="owner-lock station-login" onSubmit={(event) => { event.preventDefault(); setError(""); void onSignIn(username, password).catch((reason) => setError(reason instanceof Error ? reason.message : "Sign-in failed.")); }}><h2>Staff sign-in</h2><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required placeholder="counter" autoComplete="username"/></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} required type="password" autoComplete="current-password"/></label>{error && <p className="form-message error-message">{error}</p>}<button className="blue-button">Open counter</button><p className="password-help">Forgot your password? Ask the order manager to reset the counter password.</p></form> : <><form className="counter-order-form" onSubmit={(event) => void submit(event)}><label>Order placed for<select name="customer_type" value={customerType} onChange={(event) => setCustomerType(event.target.value as "STUDENT" | "TEACHER")}><option value="STUDENT">Student</option><option value="TEACHER">Teacher</option></select></label>{customerType === "STUDENT" ? <label>Student ID<input name="student_id" required inputMode="numeric" pattern="[0-9]{7}" minLength={7} maxLength={7} placeholder="7-digit Cedar student ID"/></label> : <label>Teacher name<input name="teacher_name" required maxLength={100} autoComplete="name" placeholder="Enter the teacher’s name"/></label>}<p className="counter-pickup-note">One menu for every item. Counter orders are placed for immediate collection; no pickup slot is needed.</p><div className="counter-items-heading"><div><h2>Choose items</h2><p>Select the items the student or teacher is ordering.</p></div><span>{Object.values(quantities).reduce((sum, count) => sum + count, 0)} selected</span></div><div className="counter-category-list">{visibleCategories.map((category) => <section className="counter-menu-category" key={category.id}><h3>{category.name}</h3><div className="counter-item-list">{category.items.map((item) => <article className={`counter-item-card ${(quantities[item.id] ?? 0) > 0 ? "is-selected" : ""}`} key={item.id}><div className="counter-item-picture"><MenuItemVisual item={item} className="counter-item-visual"/><span className="counter-item-mode">{item.quick_allowed && item.scheduled_allowed ? "READY OR MADE FRESH" : item.quick_allowed ? "READY TO COLLECT" : "MADE TO ORDER"}</span></div><div className="counter-item-card-info"><div><b>{item.name}</b><strong>{item.price_display}</strong></div><small>{item.description || (item.prep_minutes ? `Ready in about ${item.prep_minutes} minutes` : "Cedar canteen menu item")}</small>{item.options?.length ? <label className="counter-option-select">Choose one<select value={optionSelections[item.id] ?? ""} onChange={(event) => setOptionSelections((current) => ({ ...current, [item.id]: event.target.value }))}><option value="">Select an option</option>{item.options.map((option) => <option key={option.id} value={option.id} disabled={!option.available}>{option.name}{option.available ? "" : " · Out of stock"}</option>)}</select></label> : null}{item.addon_name && <label className="counter-addon-option"><input type="checkbox" checked={addonSelections[item.id] ?? false} onChange={(event) => setAddonSelections((current) => ({ ...current, [item.id]: event.target.checked }))}/> Add {item.addon_name} · +{money(item.addon_price_paisa ?? 0)}</label>}<div className="counter-quantity-control"><button type="button" disabled={(quantities[item.id] ?? 0) <= 0} onClick={() => setQuantities((current) => ({ ...current, [item.id]: Math.max(0, (current[item.id] ?? 0) - 1) }))} aria-label={`Remove one ${item.name}`}>−</button><input type="number" min="0" max="20"  value={quantities[item.id] ?? 0} onChange={(event) => setQuantities((current) => ({ ...current, [item.id]: Math.min(20, Math.max(0, Number(event.target.value))) }))} aria-label={`Quantity for ${item.name}`}/><button type="button" disabled={(quantities[item.id] ?? 0) >= 20 } onClick={() => setQuantities((current) => ({ ...current, [item.id]: Math.min(20, (current[item.id] ?? 0) + 1) }))} aria-label={`Add one ${item.name}`}>+</button></div></div></article>)}</div></section>)}</div><div className="counter-total"><span>Order total</span><strong>{money(items.reduce((sum, item) => sum + (item.price_paisa + (addonSelections[item.id] && item.addon_name ? item.addon_price_paisa ?? 0 : 0)) * (quantities[item.id] ?? 0), 0))}</strong></div>{error && <p className="form-message error-message" role="alert">{error}</p>}{success && <div className="counter-order-success" role="status"><b>{success}</b><span>Pickup number: <strong>{pickupId}</strong></span><small>Payment due in cash at pickup.</small></div>}<button className="blue-button" disabled={pending}>{pending ? "Sending order…" : "Place in-person order"}</button></form></>}</main>{receiptRequest && <ReceiptPrintView order={receiptRequest.order}/>}</>;
+  return <><main className="stations-page station-workspace"><div className="station-topline"><a href="/stations">← All staff stations</a><div className="station-top-actions">{stationUser && <ChangePasswordForm station="order_taker" onChange={onChangePassword}/>}{stationUser && <button onClick={onSignOut}>Sign out</button>}<ThemeSwitch darkMode={darkMode} onToggle={onToggleTheme} className="station-theme-toggle"/></div></div><span className="section-kicker">COUNTER · IN-PERSON ORDERS</span><h1>Counter station</h1>{stationConflict ? <StationSwitchPrompt activeStation={activeStation} activeUser={user} targetStation="order_taker" onSignOut={onSignOut} onReturn={onReturnToActive}/> : !stationUser ? <form className="owner-lock station-login" onSubmit={(event) => { event.preventDefault(); setError(""); void onSignIn(username, password).catch((reason) => setError(reason instanceof Error ? reason.message : "Sign-in failed.")); }}><h2>Staff sign-in</h2><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required placeholder="counter" autoComplete="username"/></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} required type="password" autoComplete="current-password"/></label>{error && <p className="form-message error-message">{error}</p>}<button className="blue-button">Open counter</button><p className="password-help">Forgot your password? Ask the order manager to reset the counter password.</p></form> : <><form className="counter-order-form" onSubmit={(event) => void submit(event)}><label>Order placed for<select name="customer_type" value={customerType} onChange={(event) => setCustomerType(event.target.value as "STUDENT" | "TEACHER")}><option value="STUDENT">Student</option><option value="TEACHER">Teacher</option></select></label>{customerType === "STUDENT" ? <label>Student ID<input name="student_id" required inputMode="numeric" pattern="[0-9]{7}" minLength={7} maxLength={7} placeholder="7-digit Cedar student ID"/></label> : <label>Teacher name<input name="teacher_name" required maxLength={100} autoComplete="name" placeholder="Enter the teacher’s name"/></label>}<p className="counter-pickup-note">One menu for every item. Counter orders are placed for immediate collection; no pickup slot is needed.</p><div className="counter-items-heading"><div><h2>Choose items</h2><p>Select the items the student or teacher is ordering.</p></div><span>{selectedCount} selected</span></div><div className="menu-layout counter-menu-layout"><nav className="category-sidebar counter-category-sidebar" aria-label="Counter menu categories"><div className="counter-category-heading"><b>Browse categories</b><span>{visibleCategories.length}</span></div><button type="button" className={counterCategoryId === "all" ? "active" : ""} aria-pressed={counterCategoryId === "all"} onClick={() => setCounterCategoryId("all")}>All items</button>{visibleCategories.map((category) => <button type="button" key={category.id} className={counterCategoryId === category.id ? "active" : ""} aria-pressed={counterCategoryId === category.id} onClick={() => setCounterCategoryId(category.id)}>{category.name}</button>)}</nav><div className="menu-results counter-menu-results"><div className="counter-category-list">{listedCategories.map((category) => <section className="counter-menu-category" key={category.id}><h3>{category.name}</h3><div className="counter-item-list">{category.items.map((item) => <article className={`counter-item-card ${(item.options?.length ? item.options.some((option) => (quantities[lineKey(item.id, option.id)] ?? 0) > 0) : (quantities[lineKey(item.id)] ?? 0) > 0) ? "is-selected" : ""}`} key={item.id}><div className="counter-item-picture"><MenuItemVisual item={item} className="counter-item-visual"/><span className="counter-item-mode">IN-PERSON PICKUP</span></div><div className="counter-item-card-info"><div><b>{item.name}</b><strong>{item.price_display}</strong></div><small>{item.description || (item.prep_minutes ? `Ready in about ${item.prep_minutes} minutes` : "Cedar canteen menu item")}</small>{item.options?.length ? <div className="counter-choice-launch"><button type="button" className="counter-choice-open" disabled={!item.options.some((option) => option.available)} onClick={() => openOptionPrompt(item)}>{optionSummary(item) ? "Edit choices" : "Choose options"}<span aria-hidden="true">⌄</span></button>{optionSummary(item) && <small className="counter-choice-summary">{optionSummary(item)}</small>}</div> : <>{item.addon_name && <label className="counter-addon-option"><input type="checkbox" checked={addonSelections[lineKey(item.id)] ?? false} onChange={(event) => setAddonSelections((current) => ({ ...current, [lineKey(item.id)]: event.target.checked }))}/> Add {item.addon_name} · +{money(item.addon_price_paisa ?? 0)}</label>}{quantityControl(item)}</>}</div></article>)}</div></section>)}</div></div></div><div className="counter-total"><span>Order total</span><strong>{money(orderTotal)}</strong></div>{error && <p className="form-message error-message" role="alert">{error}</p>}{success && <div className="counter-order-success" role="status"><b>{success}</b><span>Pickup number: <strong>{pickupId}</strong></span><small>Payment due in cash at pickup.</small></div>}<button ref={placeOrderButtonRef} className="blue-button" disabled={pending}>{pending ? "Sending order…" : "Place in-person order"}</button></form>{showJumpToOrder && <button type="button" className="counter-jump-to-order" onClick={jumpToPlaceOrder} aria-label="Go to place order"><span aria-hidden="true">↓</span><span>Place order</span></button>}</>}</main>{optionPromptItem && <div className="addon-prompt-scrim counter-choice-scrim" onClick={() => setOptionPromptItem(null)}><section className="addon-prompt option-prompt counter-choice-prompt" role="dialog" aria-modal="true" aria-labelledby="counter-choice-title" onClick={(event) => event.stopPropagation()}><span className="section-kicker">COUNTER ORDER</span><h2 id="counter-choice-title">Choose {optionPromptItem.name}</h2><p>Set a quantity for each choice. You can add more than one type of drink.</p><div className="counter-choice-modal-list">{(optionPromptItem.options ?? []).map((option) => <article className={`counter-choice-modal-row ${option.available ? "" : "is-unavailable"}`} key={option.id}><div className="counter-choice-modal-heading"><b>{option.name}</b><span>{option.available ? optionPromptItem.price_display : "Out of stock"}</span></div>{option.available ? <>{optionPromptItem.addon_name && <label className="counter-addon-option"><input type="checkbox" checked={optionDraftAddons[lineKey(optionPromptItem.id, option.id)] ?? false} onChange={(event) => setOptionDraftAddons((current) => ({ ...current, [lineKey(optionPromptItem.id, option.id)]: event.target.checked }))}/> Add {optionPromptItem.addon_name} · +{money(optionPromptItem.addon_price_paisa ?? 0)}</label>}{optionDraftControl(optionPromptItem, option)}</> : <small>This drink is currently unavailable.</small>}</article>)}</div><div className="addon-prompt-actions"><button type="button" onClick={() => setOptionPromptItem(null)}>Cancel</button><button type="button" className="blue-button" onClick={saveOptionPrompt}>Save drink choices</button></div></section></div>}{receiptRequest && <ReceiptPrintView order={receiptRequest.order}/>}</>;
 }
 
 function KitchenStation({ user, queue, pendingIds, darkMode, onToggleTheme, onSignIn, onSignOut, onReturnToActive, onChangePassword }: { user: User | null; queue: Order[]; pendingIds: string[]; darkMode: boolean; onToggleTheme: () => void; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void; onReturnToActive: () => void; onChangePassword: (password: string) => Promise<void> }) {

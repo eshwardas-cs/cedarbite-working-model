@@ -59,6 +59,7 @@ export function rowFromOrder(order) {
     payment_status: order.payment_status == null ? null : String(order.payment_status),
     pickup_start_at: validTime(order.pickup_window?.start_at),
     created_at: validTime(order.created_at) ?? new Date().toISOString(),
+    ready_at: validTime(order.ready_at),
     // Collected and cancelled orders both leave the queue; this is when they did.
     completed_at: validTime(order.completed_at) ?? validTime(order.cancelled_at),
     data: order,
@@ -76,6 +77,11 @@ export async function getOrder(id) {
 // Orders still in the canteen queue (not collected or cancelled), oldest first.
 export async function listActive() {
   return orders(await rest("orders?select=data&is_active=eq.true&order=created_at.asc"));
+}
+
+export async function listReadyForReminder(before, limit = 100) {
+  const cutoff = encodeURIComponent(String(before));
+  return orders(await rest(`orders?select=data&status=eq.READY&ready_at=lt.${cutoff}&order=ready_at.asc&limit=${Number(limit)}`));
 }
 
 // Collected and cancelled orders, most recent first.

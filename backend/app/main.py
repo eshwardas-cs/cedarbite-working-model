@@ -61,6 +61,11 @@ def create_app(settings: Settings | None = None, session_factory=None, email_sen
 
     @app.get("/owner", include_in_schema=False)
     @app.get("/owner/{path:path}", include_in_schema=False)
+    @app.get("/stations", include_in_schema=False)
+    @app.get("/counter", include_in_schema=False)
+    @app.get("/cash-desk", include_in_schema=False)
+    @app.get("/order-manager", include_in_schema=False)
+    @app.get("/kitchen", include_in_schema=False)
     @app.get("/my-orders", include_in_schema=False)
     @app.get("/about", include_in_schema=False)
     @app.get("/privacy-policy", include_in_schema=False)

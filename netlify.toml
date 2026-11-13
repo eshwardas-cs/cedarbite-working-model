@@ -5,6 +5,9 @@
 [functions]
   directory = "frontend/netlify/functions"
 
+[functions."order-notification-scheduler"]
+  schedule = "* * * * *"
+
 [[redirects]]
   from = "/stations"
   to = "/index.html"

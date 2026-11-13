@@ -46,9 +46,8 @@ In **SQL Editor**, run these files in order (each one is safe to run again):
 3. `supabase/migrations/0003_menu_editing.sql`: item order (`sort_order`) and two server-only functions
    for reordering the menu and removing a category. Run it **before** deploying the menu-editing code.
 4. `supabase/migrations/0004_orders.sql`: the `orders` table (server-only: no access for browser keys).
-   Run it **before** deploying the code that keeps orders in Supabase. On the first request after that
-   deploy, the function copies the orders saved in Netlify storage into this table once (marker
-   `meta/orders-in-supabase-v1`); the Netlify copies stay as a backup.
+   Run it **before** deploying the code that keeps orders in Supabase. (Went live 2026-11-10; the old
+   Netlify-storage orders were not copied because there were no real ones, and the copy step was removed.)
 5. `supabase/migrations/0005_order_cancel.sql`: cancelled orders leave the kitchen queue (`is_active` now
    means "not collected and not cancelled"). Run it **before** deploying "Cancel order".
 

@@ -11,3 +11,4 @@ dist/
 *.egg-info/
 *.tsbuildinfo
 .pytest_cache/
+.netlify/

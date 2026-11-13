@@ -3,6 +3,7 @@ import { getStore } from "@netlify/blobs";
 import * as menuStore from "../../shared/menu-store.mjs";
 import * as customerAuth from "../../shared/customer-auth.mjs";
 import * as orderStore from "../../shared/order-store.mjs";
+import * as notifications from "../../shared/notifications.mjs";
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
@@ -267,38 +268,17 @@ function priceSharedOrderLines(catalog, lines, mode) {
   return { items: priced, total_paisa, total_display: `Rs ${Math.round(total_paisa / 100).toLocaleString("en-PK")}` };
 }
 
-async function migrateLegacyQueue() {
-  const marker = "meta/active-queue-v1";
-  if (await readJSON(marker)) return;
-  const legacyOrders = await readByPrefix("orders/");
-  await Promise.all(legacyOrders
-    .filter((order) => order.status !== "COLLECTED")
-    .map((order) => store.setJSON(`queue/${order.id}`, order)));
-  await store.setJSON(marker, true);
-}
-
-// Orders live in Supabase (shared/order-store.mjs). The first request after the move copies the orders
-// that were saved in Netlify storage across, once; the Netlify copies are left in place as a backup.
-let ordersInSupabase = false;
-async function ensureOrdersInSupabase() {
-  if (ordersInSupabase) return;
-  const marker = "meta/orders-in-supabase-v1";
-  if (!await readJSON(marker)) {
-    await migrateLegacyQueue();
-    const [queue, history] = await Promise.all([readByPrefix("queue/"), readByPrefix("history/")]);
-    const copied = await orderStore.importOrders([...history, ...queue]);
-    await store.setJSON(marker, { moved_at: new Date().toISOString(), orders: copied });
-  }
-  ordersInSupabase = true;
-}
-const orderDb = Object.fromEntries(["getOrder", "listActive", "listHistory", "listAll", "listForCustomer", "insertOrder", "updateOrder", "deleteOrder"]
-  .map((name) => [name, async (...args) => { await ensureOrdersInSupabase(); return orderStore[name](...args); }]));
+// Orders live in Supabase (shared/order-store.mjs). The one-time copy from Netlify storage was done when this
+// went live (2026-11-10; there were no real orders to move), so it has been removed: a copy step that runs on
+// the first request would also run on deploy previews, which share the live storage.
+const orderDb = orderStore;
 
 export default async (request) => {
   let operation = request.method === "GET" ? "load shared canteen data" : "save shared canteen data";
   try {
     const url = new URL(request.url);
     if (request.method === "GET") {
+      if (url.searchParams.get("scope") === "push-config") return reply(notifications.pushConfig());
       if (url.searchParams.get("scope") === "student-order") {
         const id = String(url.searchParams.get("id") ?? "");
         const pickupCode = String(url.searchParams.get("pickup_code") ?? "");
@@ -425,6 +405,17 @@ export default async (request) => {
     try { body = JSON.parse(raw); } catch { return reply({ error: "Invalid JSON." }, 400); }
     if (typeof body.action === "string") operation = body.action;
 
+    if (body.action === "subscribe-push") {
+      const customer = await customerAuth.customerFromRequest(request);
+      await notifications.registerPushSubscription(customer.user_id, body.subscription);
+      return reply({ ok: true });
+    }
+    if (body.action === "unsubscribe-push") {
+      const customer = await customerAuth.customerFromRequest(request);
+      await notifications.removePushSubscription(customer.user_id, body.endpoint);
+      return reply({ ok: true });
+    }
+
     if (body.action === "login") {
       const station = typeof body.station === "string" ? body.station : "order_manager";
       const config = staffSettings[station];
@@ -461,7 +452,8 @@ export default async (request) => {
       const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) {
         if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.customer_user_id ?? "") !== customer.user_id) return reply({ error: "This order reference is already in use." }, 409);
-        return reply({ order: forStudent(existingOrder), duplicate: true });
+        const receiptEmailSent = await notifications.deliverOrderEmail(existingOrder, "receipt");
+        return reply({ order: { ...forStudent(existingOrder), receipt_email_sent: receiptEmailSent }, duplicate: true });
       }
       // The wallet is not built yet, so nothing can check a balance. Refuse it rather than mark an order PAID for free.
       if (order.payment_method === "wallet") return reply({ error: "The CedarBite wallet isn't available yet. Choose another payment method." }, 400);
@@ -527,10 +519,15 @@ export default async (request) => {
       if (!await orderDb.insertOrder(saved)) {
         // The same order arrived twice at the same moment (a retry): answer with the one that was saved.
         const already = await orderDb.getOrder(saved.id);
-        if (already && already.pickup_code === saved.pickup_code && already.customer_user_id === customer.user_id) return reply({ order: forStudent(already), duplicate: true });
+        if (already && already.pickup_code === saved.pickup_code && already.customer_user_id === customer.user_id) {
+          const receiptEmailSent = await notifications.deliverOrderEmail(already, "receipt");
+          return reply({ order: { ...forStudent(already), receipt_email_sent: receiptEmailSent }, duplicate: true });
+        }
         return reply({ error: "This order reference is already in use." }, 409);
       }
-      return reply({ order: forStudent(saved) }, 201);
+      // Email failures never undo a successfully saved order. Pending email is retried by the scheduled function.
+      const receiptEmailSent = await notifications.deliverOrderEmail(saved, "receipt");
+      return reply({ order: { ...forStudent(saved), receipt_email_sent: receiptEmailSent } }, 201);
     }
 
     if (body.action === "cancel-order") {
@@ -570,7 +567,9 @@ export default async (request) => {
       if (customerType === "TEACHER" && (!customerName || customerName.length > 100)) return reply({ error: "Enter the teacher’s name (up to 100 characters)." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
-      const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, order.mode);
+      // Counter orders are walk-up orders: staff can place any currently active
+      // menu item for immediate collection, regardless of its student order mode.
+      const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, "COUNTER");
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
       const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
       if (!await orderDb.insertOrder(saved)) return reply({ order: await orderDb.getOrder(saved.id), duplicate: true });
@@ -791,10 +790,13 @@ export default async (request) => {
       if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
       const updated = body.status === "COLLECTED"
         ? { ...order, status: body.status, completed_at: new Date().toISOString() }
-        : { ...order, status: body.status };
+        : { ...order, status: body.status, ...(body.status === "READY" ? { ready_at: new Date().toISOString() } : {}) };
       // Only saves if no other screen moved this order on in the meantime.
       const saved = await orderDb.updateOrder(updated, { expectedStatus: order.status });
-      if (saved) return reply({ order: saved });
+      if (saved) {
+        if (body.status === "READY") await notifications.sendReadyPush(saved);
+        return reply({ order: saved });
+      }
       const current = await orderDb.getOrder(body.order_id);
       if (current?.status === body.status) return reply({ order: current, duplicate: true });
       return reply({ error: "This order was just changed on another screen. Refresh and try again." }, 409);
