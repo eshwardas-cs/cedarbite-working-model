@@ -467,6 +467,26 @@ img.counter-item-visual{display:block}
 @media(max-width:1024px){
   .header-actions .theme-toggle,.owner-top-actions .theme-toggle,.station-top-actions .theme-toggle{display:inline-flex;position:static;width:auto;height:auto;min-height:42px;padding:0 11px;border-radius:7px;font-size:10px;box-shadow:none}
 }
+
+.ready-alert-settings{margin:22px 0;padding:17px 19px;display:flex;align-items:center;justify-content:space-between;gap:16px;border:1px solid var(--line);border-radius:12px;background:var(--panel,#fff)}
+.ready-alert-settings b{font-size:13px;color:var(--ink)}
+.ready-alert-settings p{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.55}
+.ready-alert-settings>button{flex:none;min-height:38px;padding:0 13px;border:1px solid #d7e0e9;border-radius:8px;background:#f6f8fb;color:#173c64;font-size:10px;font-weight:800}
+.ready-alert-settings>button:hover{border-color:#d7b332;background:#fff7dc}
+.ready-alert-settings>small{flex-basis:100%;color:var(--muted);font-size:10px}
+.order-ready-banner{margin:22px 0;padding:18px;display:flex;align-items:center;gap:13px;border:1px solid #9dd7b8;border-radius:12px;background:#effaf3;color:#155c3c}
+.receipt-email-note{margin:12px 0 16px;color:var(--muted);font-size:11px;line-height:1.55}
+.order-ready-banner>span{width:34px;height:34px;flex:none;display:grid;place-items:center;border-radius:50%;background:#168353;color:white;font-size:18px;font-weight:900}
+.order-ready-banner b{font-size:14px}
+.order-ready-banner p{margin:4px 0 0;color:#386b53;font-size:11px;line-height:1.5}
+:root[data-theme="dark"] .ready-alert-settings{border-color:#3a5069;background:#101d2d}
+:root[data-theme="dark"] .ready-alert-settings b{color:#edf3f9}
+:root[data-theme="dark"] .ready-alert-settings p,:root[data-theme="dark"] .ready-alert-settings>small{color:#c2cedb}
+:root[data-theme="dark"] .ready-alert-settings>button{border-color:#465b73;background:#1a2d43;color:#edf3f9}
+:root[data-theme="dark"] .ready-alert-settings>button:hover{border-color:#c6a725;background:#302b1b}
+:root[data-theme="dark"] .order-ready-banner{border-color:#356a52;background:#152a24;color:#b9f0d2}
+:root[data-theme="dark"] .order-ready-banner p{color:#b4d6c3}
+@media(max-width:680px){.ready-alert-settings{align-items:flex-start;flex-wrap:wrap;margin:16px 0;padding:14px}.ready-alert-settings>button{margin-left:auto}.order-ready-banner{margin:16px 0;padding:14px}}
 @media(max-width:850px){
   .owner-top-actions .owner-theme-toggle{display:inline-flex}
   .station-top-actions .station-theme-toggle{display:inline-flex}
@@ -870,4 +890,13 @@ img.counter-item-visual{display:block}
   .menu-layout>.category-sidebar{height:auto;min-height:0;max-height:none;padding:2px 1px 8px;display:flex;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:thin;scrollbar-color:#9aa8b7 #e9edf2;-webkit-overflow-scrolling:touch}
   .menu-layout>.category-sidebar button{width:auto;flex:0 0 auto;scroll-snap-align:start}
   :root[data-theme="dark"] .menu-layout>.category-sidebar{scrollbar-color:#687d92 #1a2d43}
+}
+
+/* Phones and tablets use swipeable category rows without a visible scrollbar. */
+@media(max-width:1024px){
+  .counter-menu-layout,.menu-layout{grid-template-columns:minmax(0,1fr);gap:10px}
+  .counter-category-sidebar,.menu-layout>.category-sidebar{position:static;top:auto;width:100%;height:auto;min-height:0;max-height:none;padding:6px;display:flex;align-items:center;gap:7px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;border:1px solid var(--line);border-radius:10px;background:var(--surface,#fff);scrollbar-width:none;-ms-overflow-style:none;-webkit-overflow-scrolling:touch}
+  .counter-category-sidebar::-webkit-scrollbar,.menu-layout>.category-sidebar::-webkit-scrollbar{display:none;width:0;height:0}
+  .counter-category-sidebar button,.menu-layout>.category-sidebar button{width:auto;min-width:max-content;flex:0 0 auto;scroll-snap-align:start}
+  :root[data-theme="dark"] .counter-category-sidebar,:root[data-theme="dark"] .menu-layout>.category-sidebar{border-color:#3a5069;background:#101d2d}
 }

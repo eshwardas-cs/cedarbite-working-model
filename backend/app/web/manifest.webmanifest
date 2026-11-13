@@ -1,0 +1,11 @@
+{
+  "name": "CedarBite",
+  "short_name": "CedarBite",
+  "start_url": "/my-orders",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#102b4c",
+  "icons": [
+    { "src": "/cedarbite-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

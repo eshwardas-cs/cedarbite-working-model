@@ -3,6 +3,7 @@ import { getStore } from "@netlify/blobs";
 import * as menuStore from "../../shared/menu-store.mjs";
 import * as customerAuth from "../../shared/customer-auth.mjs";
 import * as orderStore from "../../shared/order-store.mjs";
+import * as notifications from "../../shared/notifications.mjs";
 import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
@@ -277,6 +278,7 @@ export default async (request) => {
   try {
     const url = new URL(request.url);
     if (request.method === "GET") {
+      if (url.searchParams.get("scope") === "push-config") return reply(notifications.pushConfig());
       if (url.searchParams.get("scope") === "student-order") {
         const id = String(url.searchParams.get("id") ?? "");
         const pickupCode = String(url.searchParams.get("pickup_code") ?? "");
@@ -403,6 +405,17 @@ export default async (request) => {
     try { body = JSON.parse(raw); } catch { return reply({ error: "Invalid JSON." }, 400); }
     if (typeof body.action === "string") operation = body.action;
 
+    if (body.action === "subscribe-push") {
+      const customer = await customerAuth.customerFromRequest(request);
+      await notifications.registerPushSubscription(customer.user_id, body.subscription);
+      return reply({ ok: true });
+    }
+    if (body.action === "unsubscribe-push") {
+      const customer = await customerAuth.customerFromRequest(request);
+      await notifications.removePushSubscription(customer.user_id, body.endpoint);
+      return reply({ ok: true });
+    }
+
     if (body.action === "login") {
       const station = typeof body.station === "string" ? body.station : "order_manager";
       const config = staffSettings[station];
@@ -439,7 +452,8 @@ export default async (request) => {
       const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) {
         if (existingOrder.pickup_code !== order.pickup_code || String(existingOrder.customer_user_id ?? "") !== customer.user_id) return reply({ error: "This order reference is already in use." }, 409);
-        return reply({ order: forStudent(existingOrder), duplicate: true });
+        const receiptEmailSent = await notifications.deliverOrderEmail(existingOrder, "receipt");
+        return reply({ order: { ...forStudent(existingOrder), receipt_email_sent: receiptEmailSent }, duplicate: true });
       }
       // The wallet is not built yet, so nothing can check a balance. Refuse it rather than mark an order PAID for free.
       if (order.payment_method === "wallet") return reply({ error: "The CedarBite wallet isn't available yet. Choose another payment method." }, 400);
@@ -505,10 +519,15 @@ export default async (request) => {
       if (!await orderDb.insertOrder(saved)) {
         // The same order arrived twice at the same moment (a retry): answer with the one that was saved.
         const already = await orderDb.getOrder(saved.id);
-        if (already && already.pickup_code === saved.pickup_code && already.customer_user_id === customer.user_id) return reply({ order: forStudent(already), duplicate: true });
+        if (already && already.pickup_code === saved.pickup_code && already.customer_user_id === customer.user_id) {
+          const receiptEmailSent = await notifications.deliverOrderEmail(already, "receipt");
+          return reply({ order: { ...forStudent(already), receipt_email_sent: receiptEmailSent }, duplicate: true });
+        }
         return reply({ error: "This order reference is already in use." }, 409);
       }
-      return reply({ order: forStudent(saved) }, 201);
+      // Email failures never undo a successfully saved order. Pending email is retried by the scheduled function.
+      const receiptEmailSent = await notifications.deliverOrderEmail(saved, "receipt");
+      return reply({ order: { ...forStudent(saved), receipt_email_sent: receiptEmailSent } }, 201);
     }
 
     if (body.action === "cancel-order") {
@@ -771,10 +790,13 @@ export default async (request) => {
       if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
       const updated = body.status === "COLLECTED"
         ? { ...order, status: body.status, completed_at: new Date().toISOString() }
-        : { ...order, status: body.status };
+        : { ...order, status: body.status, ...(body.status === "READY" ? { ready_at: new Date().toISOString() } : {}) };
       // Only saves if no other screen moved this order on in the meantime.
       const saved = await orderDb.updateOrder(updated, { expectedStatus: order.status });
-      if (saved) return reply({ order: saved });
+      if (saved) {
+        if (body.status === "READY") await notifications.sendReadyPush(saved);
+        return reply({ order: saved });
+      }
       const current = await orderDb.getOrder(body.order_id);
       if (current?.status === body.status) return reply({ order: current, duplicate: true });
       return reply({ error: "This order was just changed on another screen. Refresh and try again." }, 409);
