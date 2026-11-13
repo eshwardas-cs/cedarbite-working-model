@@ -855,3 +855,19 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .unified-order-note{border-color:#5b4e24;background:linear-gradient(110deg,#2b281b,#172639 72%);color:#f4e8b5}
 :root[data-theme="dark"] .unified-order-note>p{color:#c5d0de}
 @media(max-width:680px){.unified-order-note{margin:12px 12px 0;padding:14px;grid-template-columns:1fr;gap:5px}.unified-order-note .section-kicker{grid-column:1;font-size:8px}.unified-order-note>b{font-size:14px}.unified-order-note>p{grid-column:1;font-size:11px}.menu-option-row{grid-template-columns:minmax(0,1fr) auto}.menu-option-row>button{grid-column:2}.menu-option-row>label{grid-column:1;grid-row:2}.option-prompt{max-height:88dvh;overflow:auto}}
+
+/* Keep student menu categories in their own scrollable navigation area. */
+.menu-layout>.category-sidebar{height:min(560px,calc(100dvh - 165px));min-height:250px;max-height:calc(100dvh - 125px);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding-right:5px;scrollbar-width:auto;scrollbar-color:#8b9aaa #e9edf2}
+.menu-layout>.category-sidebar::-webkit-scrollbar{width:10px}
+.menu-layout>.category-sidebar::-webkit-scrollbar-track{border-radius:8px;background:#e9edf2}
+.menu-layout>.category-sidebar::-webkit-scrollbar-thumb{border:2px solid #e9edf2;border-radius:8px;background:#8b9aaa}
+.menu-layout>.category-sidebar button{width:100%;scroll-margin-block:8px}
+.menu-layout>.category-sidebar button:focus-visible{outline:3px solid #e9bc24;outline-offset:2px}
+:root[data-theme="dark"] .menu-layout>.category-sidebar{scrollbar-color:#687d92 #1a2d43}
+:root[data-theme="dark"] .menu-layout>.category-sidebar::-webkit-scrollbar-track{background:#1a2d43}
+:root[data-theme="dark"] .menu-layout>.category-sidebar::-webkit-scrollbar-thumb{border-color:#1a2d43;background:#687d92}
+@media(max-width:680px){
+  .menu-layout>.category-sidebar{height:auto;min-height:0;max-height:none;padding:2px 1px 8px;display:flex;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:thin;scrollbar-color:#9aa8b7 #e9edf2;-webkit-overflow-scrolling:touch}
+  .menu-layout>.category-sidebar button{width:auto;flex:0 0 auto;scroll-snap-align:start}
+  :root[data-theme="dark"] .menu-layout>.category-sidebar{scrollbar-color:#687d92 #1a2d43}
+}
