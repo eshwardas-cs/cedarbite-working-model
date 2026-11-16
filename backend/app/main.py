@@ -70,6 +70,9 @@ def create_app(settings: Settings | None = None, session_factory=None, email_sen
     @app.get("/about", include_in_schema=False)
     @app.get("/privacy-policy", include_in_schema=False)
     @app.get("/contact-us", include_in_schema=False)
+    @app.get("/terms-and-conditions", include_in_schema=False)
+    @app.get("/team", include_in_schema=False)
+    @app.get("/order-confirmation", include_in_schema=False)
     def web_app(path: str = ""):
         # The canteen workspace is a separate app entry point in the shared web bundle.
         return FileResponse(web_root / "index.html")

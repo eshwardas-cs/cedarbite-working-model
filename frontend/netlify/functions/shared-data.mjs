@@ -231,7 +231,8 @@ function forStudent(order, includeOwnStudentId = false, includeOwnName = false) 
 async function withProfileName(order) {
   const email = String(order.customer_email ?? (order.student_id ? `${order.student_id}@cedar.edu.pk` : "")).trim().toLowerCase();
   const { customer_email: _email, ...safeOrder } = order;
-  if (safeOrder.customer_name || !email) return safeOrder;
+  const counterStudent = safeOrder.source === "COUNTER" && /^\d{7}@cedar\.edu\.pk$/.test(email);
+  if (!email || (safeOrder.customer_name && !counterStudent)) return safeOrder;
   try {
     const profile = await customerAuth.profileFromEmail(email);
     if (!profile?.full_name) return safeOrder;
@@ -380,6 +381,10 @@ export default async (request) => {
         const deals = await readJSON("menu/deals");
         return reply({ deals: Array.isArray(deals) ? deals : null });
       }
+      if (url.searchParams.get("scope") === "hero-slides") {
+        const slides = await readJSON("homepage/hero-slides");
+        return reply({ slides: Array.isArray(slides) ? slides : null });
+      }
       if (url.searchParams.get("scope") === "student-wallet") {
         const customer = await customerAuth.customerFromRequest(request);
         if (customer.role !== "student" || !customer.student_id) return reply({ error: "A Cedar student account is required to view a student wallet." }, 403);
@@ -514,6 +519,13 @@ export default async (request) => {
       }));
     }
 
+    if (body.action === "save-counter-student-name") {
+      if (!await staffConfigured("order_taker")) return reply({ error: `The ${stationLabel.order_taker} login is not configured yet.` }, 503);
+      if (!await isStaff(request, "order_taker")) return reply({ error: `Sign in to the ${stationLabel.order_taker} station to save a student name.` }, 401);
+      const saved = await customerAuth.saveCounterStudentName(body.student_id, body.full_name, request.headers.get("x-canteen-username") || "counter");
+      return reply(saved);
+    }
+
     if (body.action === "change-password") {
       const station = String(body.station ?? "");
       if (!staffSettings[station]) return reply({ error: "Choose a valid staff station." }, 400);
@@ -583,6 +595,8 @@ export default async (request) => {
       const pricedOrder = priceSharedOrderLines(catalog, order.items, order.mode);
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
       if (dealDiscountPaisa > pricedOrder.total_paisa) return reply({ error: "The deal price could not be applied. Refresh the menu and try again." }, 409);
+      const paymentMethod = String(order.payment_method ?? "cash").trim().toLowerCase();
+      if (!["cash", "wallet"].includes(paymentMethod)) return reply({ error: "Choose cash at pickup or CedarBite wallet. Other payment methods are not connected." }, 409);
       const saved = {
         id: order.id,
         status: order.mode === "QUICK" ? "READY" : "SUBMITTED",
@@ -603,10 +617,9 @@ export default async (request) => {
         customer_type: customer.role === "student" ? "STUDENT" : "TEACHER",
         customer_name: customer.full_name,
         source: "ONLINE",
-        payment_method: ["cash", "easypaisa", "jazzcash", "bank", "card"].includes(order.payment_method) ? order.payment_method : "cash",
-        payment_status: order.payment_method === "easypaisa" || order.payment_method === "jazzcash" || order.payment_method === "bank" || order.payment_method === "card" ? "PENDING" : "UNPAID",
+        payment_method: paymentMethod,
+        payment_status: paymentMethod === "wallet" ? "PENDING" : "UNPAID",
       };
-      if (saved.payment_method === "wallet") saved.payment_status = "PENDING";
       const created = await orderDb.createOrderAtomic(saved, `student:${customer.student_id ?? customer.user_id}`);
       if (created.duplicate) {
         // The same order arrived twice at the same moment (a retry): answer with the one that was saved.
@@ -677,32 +690,6 @@ export default async (request) => {
       return reply({ order: created.order, duplicate: created.duplicate }, created.duplicate ? 200 : 201);
     }
 
-    if (body.action === "student-topup-request") {
-      const id = String(body.id ?? "");
-      const student_id = String(body.student_id ?? "");
-      const amount_paisa = Number(body.amount_paisa);
-      const method = String(body.method ?? "").toLowerCase();
-      if (!/^[a-f0-9-]{36}$/i.test(id) || !/^\d{7}$/.test(student_id) || !Number.isSafeInteger(amount_paisa) || amount_paisa < 10000 || amount_paisa > 500000 || !["easypaisa", "jazzcash", "bank", "card"].includes(method)) {
-        return reply({ error: "Enter a valid student ID, top-up amount, and payment method." }, 400);
-      }
-      const key = `wallet-topups/${id}`;
-      const existing = await readJSON(key);
-      if (existing) return reply({ entry: existing, duplicate: true });
-      const entry = {
-        id,
-        student_id,
-        amount_paisa,
-        kind: "credit",
-        method,
-        status: "PAYMENT_NOT_RECEIVED",
-        label: "Student top-up request · payment not received",
-        created_at: new Date().toISOString(),
-        recorded_by: "student dashboard",
-      };
-      await store.setJSON(key, entry);
-      return reply({ entry, duplicate: false }, 201);
-    }
-
     if (body.action === "cash-topup") {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record a top-up." }, 401);
@@ -759,6 +746,19 @@ export default async (request) => {
       }
       await store.setJSON("menu/deals", body.deals);
       return reply({ deals: body.deals });
+    }
+
+    if (body.action === "set-hero-slides") {
+      if (!Array.isArray(body.slides) || body.slides.length < 1 || body.slides.length > 5) return reply({ error: "Keep between one and five homepage slides." }, 400);
+      if (!body.slides.some((slide) => slide?.active === true)) return reply({ error: "Show at least one homepage slide." }, 400);
+      const ids = new Set();
+      for (const slide of body.slides) {
+        const validImage = typeof slide?.image_data === "string" && slide.image_data.length <= 430_000 && (/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(slide.image_data) || /^\/assets\/[A-Za-z0-9/_-]{1,180}\.(?:jpg|jpeg|png|webp)$/i.test(slide.image_data));
+        if (!slide || typeof slide.id !== "string" || !slide.id || slide.id.length > 80 || ids.has(slide.id) || typeof slide.kicker !== "string" || !slide.kicker.trim() || slide.kicker.length > 70 || typeof slide.title !== "string" || !slide.title.trim() || slide.title.length > 65 || typeof slide.highlight !== "string" || !slide.highlight.trim() || slide.highlight.length > 45 || typeof slide.description !== "string" || !slide.description.trim() || slide.description.length > 220 || typeof slide.active !== "boolean" || !validImage) return reply({ error: "Check each slide’s heading, message, visibility, and photo." }, 400);
+        ids.add(slide.id);
+      }
+      await store.setJSON("homepage/hero-slides", body.slides);
+      return reply({ slides: body.slides });
     }
 
     if (body.action === "add-menu-item") {

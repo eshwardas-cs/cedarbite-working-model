@@ -43,10 +43,6 @@
   to = "/index.html"
   status = 200
 
-[[redirects]]
-  from = "/order-confirmation"
-  to = "/index.html"
-  status = 200
 
 [[redirects]]
   from = "/about"
@@ -60,5 +56,20 @@
 
 [[redirects]]
   from = "/contact-us"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/terms-and-conditions"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/team"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/order-confirmation"
   to = "/index.html"
   status = 200

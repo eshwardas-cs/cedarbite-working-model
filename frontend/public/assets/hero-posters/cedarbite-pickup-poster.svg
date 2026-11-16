@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 650" role="img" aria-label="CedarBite pickup poster">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff8df"/><stop offset="1" stop-color="#f5e9bd"/></linearGradient>
+    <pattern id="lines" width="22" height="22" patternUnits="userSpaceOnUse"><path d="M0 21h22" stroke="#102b4c" stroke-opacity=".07"/></pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="20" stdDeviation="15" flood-color="#102b4c" flood-opacity=".2"/></filter>
+  </defs>
+  <path fill="url(#paper)" d="M0 0h1500v650H0z"/><path fill="url(#lines)" d="M510 0h990v650H510z"/>
+  <path fill="#f8c51c" d="M954 0h546v650H954z"/><path fill="#102b4c" d="M1268 0h232v650h-232z"/>
+  <path fill="#fff" d="M709 89h455v471H709z" transform="rotate(-5 936 324)" filter="url(#shadow)"/>
+  <g transform="rotate(-5 936 324)">
+    <path fill="#102b4c" d="M709 89h455v94H709z"/>
+    <circle cx="754" cy="137" r="19" fill="#ffc928"/><path d="m745 137 7 7 13-15" fill="none" stroke="#102b4c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="790" y="143" fill="#fff" font-family="Arial,sans-serif" font-size="19" font-weight="700" letter-spacing="2">CEDARBITE · PICKUP</text>
+    <text x="752" y="246" fill="#b18706" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="4">ORDER AHEAD</text>
+    <text x="752" y="296" fill="#102b4c" font-family="Arial,sans-serif" font-size="38" font-weight="800">YOUR TIME,</text>
+    <text x="752" y="339" fill="#102b4c" font-family="Arial,sans-serif" font-size="38" font-weight="800">YOUR PICKUP.</text>
+    <path d="M752 370h360" stroke="#d9e0e7" stroke-width="2"/>
+    <circle cx="766" cy="416" r="12" fill="#ffc928"/><path d="M761 416h10m-5-5v10" stroke="#102b4c" stroke-width="2" stroke-linecap="round"/>
+    <text x="792" y="422" fill="#52677d" font-family="Arial,sans-serif" font-size="17">Choose a window for prepared food</text>
+    <circle cx="766" cy="462" r="12" fill="#dce8f1"/><path d="m760 462 4 4 8-9" fill="none" stroke="#102b4c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="792" y="468" fill="#52677d" font-family="Arial,sans-serif" font-size="17">Ready items go straight to pickup</text>
+  </g>
+  <g transform="translate(1222 144)">
+    <path fill="#f8f4e9" d="M0 0h216v240H0z"/><path fill="#102b4c" d="M29 35h158v14H29zm0 31h115v8H29zm0 49h158v8H29zm0 25h132v8H29zm0 48h158v8H29z"/>
+    <circle cx="166" cy="72" r="8" fill="#ffc928"/><circle cx="151" cy="155" r="8" fill="#ffc928"/><circle cx="173" cy="200" r="8" fill="#ffc928"/>
+    <text x="29" y="224" fill="#b18706" font-family="Arial,sans-serif" font-size="11" font-weight="700" letter-spacing="2">MADE FOR CAMPUS</text>
+  </g>
+  <path d="M1202 516c68 57 138 74 219 47" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="1204" cy="516" r="10" fill="#102b4c" stroke="#fff" stroke-width="4"/><circle cx="1420" cy="563" r="10" fill="#102b4c" stroke="#fff" stroke-width="4"/>
+  <text x="578" y="594" fill="#102b4c" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="5">PLAN THE PICKUP · ENJOY THE BREAK</text>
+</svg>

@@ -63,7 +63,8 @@ In **SQL Editor**, run these files in order (each one is safe to run again):
    precedence on future lookups and receipts.
 
 ### 3. Menu data (one-time import)
-This copies `frontend/src/catalog.json` (14 categories, 51 items and their photos) into Supabase:
+This copies `frontend/src/catalog.json` (14 categories and 51 items) and the matching photos in
+`frontend/public/assets/menu-images/` into Supabase:
 1. Create `frontend/.env.local` with `VITE_SUPABASE_URL=` and `VITE_SUPABASE_PUBLISHABLE_KEY=` filled in.
 2. Create `supabase/.env.admin` with `SUPABASE_SECRET_KEY=` filled in. This file is git-ignored.
 3. From `frontend/`, run `node scripts/import-menu.mjs` first. That is a dry run and changes nothing.
@@ -153,4 +154,4 @@ Add the person's email and role (`staff` / `manager` / `owner`) to **Table Edito
 | Email + password sign-up with a fake Cedar email and forged Google/`hd` metadata | Refused |
 | Anonymous sign-in | Refused (disabled) |
 | The publishable key tries to insert, update or delete menu rows, upload photos, or read `staff_allowlist` / `profiles` while logged out | All refused |
-| Menu loaded from Supabase compared with `catalog.json` | All 51 items match on every field |
+| Menu loaded from Supabase compared with `catalog.json` | All 51 items match on menu fields and display their imported photos |
