@@ -59,7 +59,9 @@ const get = (scope) => sharedData(new Request(`${ENDPOINT}?scope=${scope}`));
 const studentOrder = (items) => ({ action: "create-order", order: { id: "2f8e0942-21a1-49db-8134-26b6fc73e008", pickup_code: "CB12AB34", mode: "QUICK", payment_method: "cash", items } });
 
 const savedPassword = process.env.CANTEEN_DASHBOARD_PASSWORD;
+const savedCashierPassword = process.env.CANTEEN_CASHIER_PASSWORD;
 afterAll(() => { process.env.CANTEEN_DASHBOARD_PASSWORD = savedPassword; });
+afterAll(() => { if (savedCashierPassword === undefined) delete process.env.CANTEEN_CASHIER_PASSWORD; else process.env.CANTEEN_CASHIER_PASSWORD = savedCashierPassword; });
 
 beforeEach(() => {
   process.env.CANTEEN_DASHBOARD_PASSWORD = "manager-test-password";
@@ -333,5 +335,37 @@ describe("menu item options (e.g. drink flavours)", () => {
   it("refuses an option on an item that has none", async () => {
     const response = await post({ action: "create-order", order: { id, pickup_code: "CB777777", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1, option_id: "opt-cola" }] } });
     expect(response.status).toBe(409);
+  });
+});
+
+describe("manager station password reset", () => {
+  it("stores a hashed station password and accepts it at the next login", async () => {
+    delete process.env.CANTEEN_CASHIER_PASSWORD;
+    const newPassword = "Cashdesk-reset-2026!";
+    const reset = await post({ action: "reset-station-password", station: "cashier", new_password: newPassword }, MANAGER);
+    expect(reset.status).toBe(200);
+
+    const saved = mockStore.values.get("staff-passwords/cashier");
+    expect(saved).toMatchObject({ salt: expect.any(String), hash: expect.any(String) });
+    expect(saved.hash).not.toBe(newPassword);
+
+    const login = (password) => post({ action: "login", station: "cashier", username: "cashdesk", password });
+    expect((await login("old-cashier-password" )).status).toBe(401);
+    const accepted = await login(newPassword);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ ok: true, station: "cashier", username: "cashdesk" });
+  });
+});
+
+describe("homepage banner settings", () => {
+  it("returns a saved replacement image from the student-facing banner endpoint", async () => {
+    const slides = [{ id: "cedarbite-hero-1", kicker: "CEDAR COLLEGE", title: "Fresh lunch", highlight: "made easy.", description: "Browse the menu and collect on campus.", image_data: "data:image/jpeg;base64,AA==", active: true }];
+    const saved = await post({ action: "set-hero-slides", slides }, MANAGER);
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ slides });
+
+    const studentView = await get("hero-slides");
+    expect(studentView.status).toBe(200);
+    expect(await studentView.json()).toEqual({ slides });
   });
 });
