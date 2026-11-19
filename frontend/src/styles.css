@@ -1394,3 +1394,4 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .food-card.item-of-day-featured .food-tag{background:#fff;color:#725500}
 @media(max-width:820px){.item-of-day-spotlight{padding:0}.item-of-day-grid.food-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}
 @media(max-width:600px){.item-of-day-spotlight{margin-top:18px;padding:0}.item-of-day-heading{align-items:center;flex-direction:row;gap:10px}.item-of-day-heading h2{font-size:22px}.item-of-day-eyebrow{font-size:7px}.item-of-day-date{max-width:140px;text-align:center;font-size:8px;line-height:1.35}.item-of-day-grid.food-grid{grid-template-columns:1fr;gap:10px}}
+.menu-area{scroll-margin-top:96px}

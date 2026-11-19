@@ -1111,7 +1111,11 @@ export default function App() {
     setMobileMenuOpen(false);
     const url = next === "owner" ? "/owner" : next === "stations" ? "/stations" : next === "counter" ? "/counter" : next === "cashdesk" ? "/cash-desk" : next === "order-manager" ? "/order-manager" : next === "kitchen" ? "/kitchen" : next === "orders" ? "/my-orders" : next === "confirmation" ? "/order-confirmation" : next === "about" ? "/about" : next === "privacy" ? "/privacy-policy" : next === "terms" ? "/terms-and-conditions" : next === "contact" ? "/contact-us" : next === "team" ? "/team" : "/";
     window.history.pushState({}, "", url);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (next === "menu") {
+      window.requestAnimationFrame(() => document.getElementById("menu")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
   function returnToActiveStation() {
     const active = storageGet("session", CANTEEN_ROLE_KEY);
