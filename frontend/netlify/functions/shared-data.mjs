@@ -377,9 +377,10 @@ export default async (request) => {
         const settings = await readJSON("settings/ordering") || { paused: false };
         return reply({ paused: settings.paused === true });
       }
-      if (url.searchParams.get("scope") === "deals") {
-        const deals = await readJSON("menu/deals");
-        return reply({ deals: Array.isArray(deals) ? deals : null });
+      if (url.searchParams.get("scope") === "item-of-day") {
+        const schedule = await readJSON("menu/item-of-day");
+        const normalized = (Array.isArray(schedule) ? schedule : []).filter((entry) => Number.isSafeInteger(entry?.item?.id) && entry.item.id < 0 && Array.isArray(entry.days));
+        return reply({ schedule: normalized });
       }
       if (url.searchParams.get("scope") === "hero-slides") {
         const slides = await readJSON("homepage/hero-slides");
@@ -563,6 +564,17 @@ export default async (request) => {
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const catalog = await menuStore.readCatalog();
+      const menuOfDay = await readJSON("menu/item-of-day");
+      const storedMenuItemById = new Map(catalog.categories.flatMap((category) => category.items ?? []).map((item) => [Number(item.id), item]));
+      const orderDate = order.mode === "SCHEDULED" ? new Date(order.pickup_window.start_at) : new Date();
+      const orderWeekday = Number.isNaN(orderDate.getTime()) ? "" : new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Karachi", weekday: "long" }).format(orderDate).toLowerCase();
+      const itemOfDayItems = (Array.isArray(menuOfDay) ? menuOfDay : []).flatMap((entry) => {
+        if (!Array.isArray(entry?.days) || !entry.days.includes(orderWeekday)) return [];
+        const item = entry.item && Number.isSafeInteger(entry.item.id) ? entry.item : storedMenuItemById.get(Number(entry?.item_id));
+        if (!item || storedMenuItemById.has(Number(item.id))) return [];
+        return [item];
+      });
+      if (itemOfDayItems.length) catalog.categories.push({ id: -1, name: "Items of the day", items: itemOfDayItems });
       const menuItemsById = new Map(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item]));
       const unavailableItem = order.items.find((item) => menuItemsById.get(String(item.item_id))?.available === false);
       if (unavailableItem) return reply({ error: `${unavailableItem.name} is currently unavailable. Remove it from your bucket and try again.` }, 409);
@@ -571,40 +583,16 @@ export default async (request) => {
         const slotAvailable = listPickupWindows(activeOrders).some((window) => Date.parse(window.start_at) === Date.parse(order.pickup_window.start_at));
         if (!slotAvailable) return reply({ error: "That pickup slot is full or no longer available. Choose another 10-minute slot." }, 409);
       }
-      const dealIds = order.deal_ids ?? [];
-      if (!Array.isArray(dealIds) || dealIds.length > 20 || dealIds.some((id) => typeof id !== "string" || id.length > 80)) return reply({ error: "Deal details are invalid." }, 400);
-      const savedDeals = await readJSON("menu/deals") || [];
-      const remainingQuantities = new Map();
-      for (const line of order.items) remainingQuantities.set(line.item_id, (remainingQuantities.get(line.item_id) || 0) + line.quantity);
-      let dealDiscountPaisa = 0;
-      for (const dealId of dealIds) {
-        const deal = savedDeals.find((entry) => entry.id === dealId && entry.active === true);
-        if (!deal || !Array.isArray(deal.item_ids) || !deal.item_ids.length) return reply({ error: "This deal is no longer available. Refresh the menu and try again." }, 409);
-        let regularDealTotal = 0;
-        for (const itemId of deal.item_ids) {
-          const item = catalog?.categories?.flatMap((category) => category.items ?? []).find((entry) => entry.id === itemId);
-          if (!item || item.available === false || (remainingQuantities.get(itemId) || 0) < 1) return reply({ error: "Add every item in the deal to your bucket before placing the order." }, 409);
-          remainingQuantities.set(itemId, remainingQuantities.get(itemId) - 1);
-          regularDealTotal += item.price_paisa;
-        }
-        if (deal.price_paisa != null) {
-          if (!Number.isSafeInteger(deal.price_paisa) || deal.price_paisa < 0) return reply({ error: "The deal price is invalid. Ask the canteen manager to update it." }, 409);
-          dealDiscountPaisa += Math.max(0, regularDealTotal - deal.price_paisa);
-        }
-      }
       const pricedOrder = priceSharedOrderLines(catalog, order.items, order.mode);
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
-      if (dealDiscountPaisa > pricedOrder.total_paisa) return reply({ error: "The deal price could not be applied. Refresh the menu and try again." }, 409);
       const paymentMethod = String(order.payment_method ?? "cash").trim().toLowerCase();
       if (!["cash", "wallet"].includes(paymentMethod)) return reply({ error: "Choose cash at pickup or CedarBite wallet. Other payment methods are not connected." }, 409);
       const saved = {
         id: order.id,
         status: order.mode === "QUICK" ? "READY" : "SUBMITTED",
         mode: order.mode === "SCHEDULED" ? "SCHEDULED" : "QUICK",
-        total_paisa: pricedOrder.total_paisa - dealDiscountPaisa,
-        total_display: `Rs ${Math.round((pricedOrder.total_paisa - dealDiscountPaisa) / 100).toLocaleString("en-PK")}`,
-        deal_discount_paisa: dealDiscountPaisa,
-        deal_ids: dealIds,
+        total_paisa: pricedOrder.total_paisa,
+        total_display: pricedOrder.total_display,
         pickup_code: order.pickup_code,
         created_at: new Date().toISOString(),
         ...(order.mode === "QUICK" ? { ready_at: new Date().toISOString() } : {}),
@@ -680,7 +668,16 @@ export default async (request) => {
       if (method === "wallet" && !studentProfile?.profile_exists) return reply({ error: "The student must sign in once before their wallet can be used. Take cash for this counter order." }, 409);
       // Counter orders are walk-up orders: staff can place any currently active
       // menu item for immediate collection, regardless of its student order mode.
-      const pricedOrder = priceSharedOrderLines(await menuStore.readCatalog(), order.items, "COUNTER");
+      const catalog = await menuStore.readCatalog();
+      const menuOfDay = await readJSON("menu/item-of-day");
+      const today = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Karachi", weekday: "long" }).format(new Date()).toLowerCase();
+      const menuIds = new Set(catalog.categories.flatMap((category) => category.items ?? []).map((item) => Number(item.id)));
+      const counterSpecials = (Array.isArray(menuOfDay) ? menuOfDay : []).flatMap((entry) => {
+        const item = entry?.item;
+        return Array.isArray(entry?.days) && entry.days.includes(today) && Number.isSafeInteger(item?.id) && item.id < 0 && !menuIds.has(item.id) ? [item] : [];
+      });
+      if (counterSpecials.length) catalog.categories.push({ id: -1, name: "Items of the day", items: counterSpecials });
+      const pricedOrder = priceSharedOrderLines(catalog, order.items, "COUNTER");
       if (pricedOrder.error) return reply({ error: pricedOrder.error }, 409);
       if (customerType === "STUDENT" && !studentProfile?.full_name) {
         studentProfile = await customerAuth.saveCounterStudentName(studentId, customerName, request.headers.get("x-canteen-username") || "counter");
@@ -728,24 +725,27 @@ export default async (request) => {
       return reply({ paused: body.paused });
     }
 
-    if (body.action === "set-deals") {
-      if (!Array.isArray(body.deals) || body.deals.length > 50) return reply({ error: "Deal list is invalid." }, 400);
-      const catalog = await menuStore.readCatalog();
-      const catalogItems = new Map(catalog.categories.flatMap((category) => category.items ?? []).map((item) => [item.id, item]));
-      const ids = new Set();
-      for (const deal of body.deals) {
-        if (!deal || typeof deal.id !== "string" || !deal.id || deal.id.length > 80 || ids.has(deal.id) || typeof deal.title !== "string" || !deal.title.trim() || deal.title.length > 80 || typeof deal.description !== "string" || deal.description.length > 220 || typeof deal.active !== "boolean" || !Array.isArray(deal.item_ids) || deal.item_ids.length < 1 || deal.item_ids.length > 30 || new Set(deal.item_ids).size !== deal.item_ids.length) return reply({ error: "Check the deal title, description, and selected items." }, 400);
-        ids.add(deal.id);
-        let regularTotal = 0;
-        for (const itemId of deal.item_ids) {
-          const item = catalogItems.get(itemId);
-          if (!Number.isSafeInteger(itemId) || !item || item.available === false) return reply({ error: "A selected deal item is no longer available. Refresh the menu." }, 409);
-          regularTotal += item.price_paisa;
-        }
-        if (deal.price_paisa != null && (!Number.isSafeInteger(deal.price_paisa) || deal.price_paisa < 0 || deal.price_paisa > regularTotal)) return reply({ error: "Deal price must be a valid amount no higher than the regular item total." }, 400);
+    if (body.action === "set-item-of-day") {
+      if (!Array.isArray(body.schedule) || body.schedule.length > 20) return reply({ error: "Keep no more than 20 items in the item of the day list." }, 400);
+      const allowedDays = new Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+      const itemIds = new Set();
+      const schedule = [];
+      for (const entry of body.schedule) {
+        if (!entry || !Array.isArray(entry.days) || entry.days.length > 7 || entry.days.some((day) => typeof day !== "string" || !allowedDays.has(day)) || new Set(entry.days).size !== entry.days.length) return reply({ error: "Choose valid, non-duplicated weekdays for each item." }, 400);
+        let item = entry.item;
+        const itemId = Number.isSafeInteger(item?.id) ? item.id : Number.isSafeInteger(entry.item_id) ? entry.item_id : null;
+        if (itemId == null || itemIds.has(itemId)) return reply({ error: "Each item of the day must have a unique ID." }, 400);
+        const name = typeof item?.name === "string" ? item.name.trim() : "";
+        const description = typeof item?.description === "string" ? item.description.trim() : "";
+        const price = Number(item?.price_paisa);
+        const validImage = item?.image_data == null || typeof item.image_data === "string" && item.image_data.length <= 180_000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_data);
+        if (itemId >= 0 || !name || name.length > 100 || description.length > 300 || !Number.isSafeInteger(price) || price < 0 || price > 10_000_000 || typeof item?.quick_allowed !== "boolean" || typeof item?.scheduled_allowed !== "boolean" || (!item.quick_allowed && !item.scheduled_allowed) || !validImage) return reply({ error: "Check the item name, description, price, order options, and image." }, 400);
+        item = { id: itemId, category_id: -1, name, description, price_paisa: price, price_display: `Rs ${(price / 100).toLocaleString("en-PK", { minimumFractionDigits: price % 100 ? 2 : 0, maximumFractionDigits: 2 })}`, available: item.available !== false, quick_allowed: item.quick_allowed, scheduled_allowed: item.scheduled_allowed, prep_minutes: item.scheduled_allowed ? (Number.isInteger(item.prep_minutes) && item.prep_minutes >= 0 && item.prep_minutes <= 240 ? item.prep_minutes : 15) : null, image_data: item.image_data ?? null };
+        itemIds.add(itemId);
+        if (entry.days.length) schedule.push({ item, days: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].filter((day) => entry.days.includes(day)) });
       }
-      await store.setJSON("menu/deals", body.deals);
-      return reply({ deals: body.deals });
+      await store.setJSON("menu/item-of-day", schedule);
+      return reply({ schedule });
     }
 
     if (body.action === "set-hero-slides") {
