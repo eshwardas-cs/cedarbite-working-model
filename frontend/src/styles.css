@@ -1484,3 +1484,17 @@ img.counter-item-visual{display:block}
 :root[data-theme="dark"] .developer-export-card > span { background: #3a321b; color: #ffe08a; }
 :root[data-theme="dark"] .developer-quick-actions span { color: #ffe08a; }
 .owner-sidebar .sidebar-link > i.customize-chevron { width: auto; height: auto; min-width: 0; margin-left: auto; display: block; place-items: initial; border-radius: 0; background: transparent; color: inherit; font-size: 12px; font-style: normal; font-weight: 400; line-height: 1; }
+
+.developer-quick-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 28px; }
+.developer-quick-actions button { min-width: 0; min-height: 64px; padding: 10px 14px 10px 17px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #dce4ed; border-radius: 13px; background: linear-gradient(135deg, #fff, #f6f9fc); color: #102b4c; box-shadow: 0 5px 16px #102b4c0b; text-align: left; font-size: 13px; font-weight: 750; transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease; }
+.developer-quick-actions button:hover { transform: translateY(-2px); border-color: #e0b924; background: linear-gradient(135deg, #fffdf5, #fff8df); box-shadow: 0 10px 22px #102b4c16; }
+.developer-quick-actions button:active { transform: translateY(0); box-shadow: 0 3px 8px #102b4c12; }
+.developer-quick-actions button:focus-visible { outline: 3px solid #d6aa16; outline-offset: 3px; }
+.developer-quick-actions span { width: 30px; height: 30px; flex: 0 0 30px; margin: 0; display: grid; place-items: center; border: 1px solid #f0dfa4; border-radius: 50%; background: #fff7d6; color: #846400; font-size: 16px; transition: transform .18s ease, background .18s ease; }
+.developer-quick-actions button:hover span { transform: translate(2px, -2px); background: #ffedaa; }
+:root[data-theme="dark"] .developer-quick-actions button { border-color: #3a5069; background: linear-gradient(135deg, #1b3047, #142337); color: #f1f5fa; box-shadow: 0 6px 18px #0002; }
+:root[data-theme="dark"] .developer-quick-actions button:hover { border-color: #d0ad37; background: linear-gradient(135deg, #263a4d, #1b3047); box-shadow: 0 10px 24px #0004; }
+:root[data-theme="dark"] .developer-quick-actions span { border-color: #75632c; background: #3a321b; color: #ffe08a; }
+:root[data-theme="dark"] .developer-quick-actions button:hover span { background: #51451e; }
+@media (max-width: 900px) { .developer-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .developer-quick-actions { grid-template-columns: 1fr; gap: 9px; margin-top: 20px; } .developer-quick-actions button { min-height: 56px; } }
