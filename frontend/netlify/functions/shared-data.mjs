@@ -5,7 +5,7 @@ import * as customerAuth from "../../shared/customer-auth.mjs";
 import * as orderStore from "../../shared/order-store.mjs";
 import * as walletStore from "../../shared/wallet-store.mjs";
 import * as notifications from "../../shared/notifications.mjs";
-import { listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
+import { isCanteenOpenNow, isPickupSlotWindowOpen, listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
 const store = getStore({
   name: "cedarbite-shared-pilot",
@@ -14,7 +14,15 @@ const store = getStore({
 });
 
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
-const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
+const reply = (body, status = 200, extraHeaders = {}) => new Response(JSON.stringify(body), { status, headers: { ...headers, ...extraHeaders } });
+const liveMenuCacheHeaders = {
+  "Cache-Control": "public, max-age=20",
+  "Netlify-CDN-Cache-Control": "public, durable, max-age=30",
+};
+const heroSlidesCacheHeaders = {
+  "Cache-Control": "public, max-age=60",
+  "Netlify-CDN-Cache-Control": "public, durable, max-age=60",
+};
 const transitions = { SUBMITTED: "PREPARING", ACCEPTED: "READY", PREPARING: "READY", READY: "COLLECTED" };
 const reportDayKey = (value) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
 const reportHour = (value) => Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Karachi", hour: "2-digit", hourCycle: "h23" }).format(value));
@@ -28,6 +36,22 @@ function validReportMonth(value) {
   if (typeof value !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) return false;
   const [year, month] = value.split("-").map(Number);
   return year >= 2000 && year <= 9999 && month >= 1 && month <= 12;
+}
+function nextReportDay(value) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+function pakistanMidnightUtc(value) {
+  return new Date(`${value}T00:00:00.000+05:00`).toISOString();
+}
+function temporaryOpeningState(saved, now = new Date()) {
+  const expires = Date.parse(saved?.expires_at ?? "");
+  const active = saved?.enabled === true && Number.isFinite(expires) && expires > now.getTime();
+  return { active, expires_at: active ? new Date(expires).toISOString() : null };
+}
+function temporaryOpeningExpiry(now = new Date()) {
+  return pakistanMidnightUtc(nextReportDay(reportDayKey(now)));
 }
 function orderTotalPaisa(order) {
   if (Number.isSafeInteger(order.total_paisa) && order.total_paisa >= 0) return order.total_paisa;
@@ -158,6 +182,7 @@ const listBlobs = (prefix) => retryRead(() => store.list({ prefix }));
 
 const staffSettings = {
   order_manager: { username: () => process.env.CANTEEN_DASHBOARD_USERNAME || "manager", password: () => process.env.CANTEEN_DASHBOARD_PASSWORD },
+  developer: { username: () => process.env.CANTEEN_DEVELOPER_USERNAME || "developer", password: () => process.env.CANTEEN_DEVELOPER_PASSWORD },
   order_taker: { username: () => process.env.CANTEEN_COUNTER_USERNAME || "counter", password: () => process.env.CANTEEN_COUNTER_PASSWORD },
   cashier: { username: () => process.env.CANTEEN_CASHIER_USERNAME || "cashdesk", password: () => process.env.CANTEEN_CASHIER_PASSWORD },
   kitchen: { username: () => process.env.CANTEEN_KITCHEN_USERNAME || "kitchenmonitor", password: () => process.env.CANTEEN_KITCHEN_PASSWORD },
@@ -215,8 +240,8 @@ async function isStaff(request, station) {
 }
 
 const managerConfigured = async () => staffConfigured("order_manager");
-const isManager = async (request) => isStaff(request, "order_manager");
-const stationLabel = { order_manager: "order control", order_taker: "counter orders", cashier: "cash desk", kitchen: "kitchen monitor" };
+const isManager = async (request) => await isStaff(request, "order_manager") || await isStaff(request, "developer");
+const stationLabel = { order_manager: "order control", developer: "developer area", order_taker: "counter orders", cashier: "cash desk", kitchen: "kitchen monitor" };
 
 // What a student's own browser may see of an order (no other people's details, no internal IDs).
 function forStudent(order, includeOwnStudentId = false, includeOwnName = false) {
@@ -375,16 +400,62 @@ export default async (request) => {
       }
       if (url.searchParams.get("scope") === "ordering-status") {
         const settings = await readJSON("settings/ordering") || { paused: false };
-        return reply({ paused: settings.paused === true });
+        const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
+        const regularOpen = isCanteenOpenNow();
+        return reply({ paused: settings.paused === true, manual_paused: settings.paused === true, closed: !regularOpen, temporary_open: temporary.active, temporary_open_expires_at: temporary.expires_at, counter_open: regularOpen || temporary.active, kitchen_open: regularOpen || temporary.active, manager_open: regularOpen || temporary.active, cashier_open: regularOpen && !temporary.active, student_orders_open: regularOpen && settings.paused !== true, operation_mode: temporary.active ? "temporary" : regularOpen ? "regular" : "closed" });
       }
       if (url.searchParams.get("scope") === "item-of-day") {
         const schedule = await readJSON("menu/item-of-day");
         const normalized = (Array.isArray(schedule) ? schedule : []).filter((entry) => Number.isSafeInteger(entry?.item?.id) && entry.item.id < 0 && Array.isArray(entry.days));
-        return reply({ schedule: normalized });
+        return reply({ schedule: normalized }, 200, liveMenuCacheHeaders);
       }
       if (url.searchParams.get("scope") === "hero-slides") {
         const slides = await readJSON("homepage/hero-slides");
-        return reply({ slides: Array.isArray(slides) ? slides : null });
+        return reply({ slides: Array.isArray(slides) ? slides : null }, 200, heroSlidesCacheHeaders);
+      }
+      if (url.searchParams.get("scope") === "developer-export") {
+        if (!await staffConfigured("developer")) return reply({ error: "The developer login is not configured yet. Add CANTEEN_DEVELOPER_PASSWORD in Netlify environment variables." }, 503);
+        if (!await isStaff(request, "developer")) return reply({ error: "Sign in to the developer area to export CedarBite data." }, 401);
+        const from = String(url.searchParams.get("from") ?? "");
+        const to = String(url.searchParams.get("to") ?? "");
+        const today = reportDayKey(new Date());
+        if (!validReportDay(from) || !validReportDay(to) || from > to || to > today) return reply({ error: "Choose a valid date range up to today." }, 400);
+        const dayCount = (Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000 + 1;
+        if (dayCount > 31) return reply({ error: "Exports are limited to 31 days at a time. Choose a shorter date range." }, 400);
+        const fromInclusive = pakistanMidnightUtc(from);
+        const toExclusive = pakistanMidnightUtc(nextReportDay(to));
+        const [orders, walletEntries, catalog, itemOfDaySchedule] = await Promise.all([
+          orderStore.listCreatedBetween(fromInclusive, toExclusive),
+          walletStore.listWalletEntriesBetween(fromInclusive, toExclusive),
+          menuStore.readCatalog(),
+          readJSON("menu/item-of-day"),
+        ]);
+        const days = [];
+        for (let date = from; date <= to; date = nextReportDay(date)) days.push(date);
+        const salesByDay = days.map((date) => dailySalesSummary(date, orders));
+        const months = [...new Set(days.map((date) => date.slice(0, 7)))];
+        const salesByMonth = months.map((month) => monthlySalesSummary(month, orders));
+        const orderRows = orders.map((order) => ({
+          order_id: String(order.id ?? ""), pickup_number: String(order.pickup_code ?? ""), placed_at: order.created_at ?? "",
+          completed_at: order.completed_at ?? "", customer_type: order.customer_type ?? "",
+          student_id: order.customer_type === "STUDENT" ? order.student_id ?? "" : "",
+          customer_name: order.customer_name ?? "", source: order.source ?? "", order_type: order.mode ?? "",
+          status: order.status ?? "", items: (Array.isArray(order.items) ? order.items : []).map((item) => `${item.quantity} × ${item.name}`).join("; "),
+          units: (Array.isArray(order.items) ? order.items : []).reduce((sum, item) => sum + (Number.isInteger(item.quantity) ? item.quantity : 0), 0),
+          total_paisa: Number(order.total_paisa ?? 0), payment_method: order.payment_method ?? "", payment_status: order.payment_status ?? "",
+          refunded: order.refund_status === "REFUNDED", refund_amount_paisa: order.refund_amount_paisa ?? (order.refund_status === "REFUNDED" ? order.total_paisa : 0),
+          refunded_at: order.refunded_at ?? "",
+        }));
+        const menuRows = catalog.categories.flatMap((category) => category.items.map((item) => ({
+          section: category.name, name: item.name, description: item.description, price_paisa: item.price_paisa,
+          available: item.available, pickup_type: [item.quick_allowed && "Quick", item.scheduled_allowed && "Scheduled"].filter(Boolean).join(" + "),
+          options: (item.options ?? []).map((option) => `${option.name}${option.available ? "" : " (out of stock)"}`).join("; "),
+          image_available: Boolean(item.image_data),
+        })));
+        for (const entry of Array.isArray(itemOfDaySchedule) ? itemOfDaySchedule : []) {
+          if (entry?.item?.name) menuRows.push({ section: `Item of the day · ${(entry.days ?? []).join(", ")}`, name: entry.item.name, description: entry.item.description, price_paisa: entry.item.price_paisa, available: entry.item.available, pickup_type: [entry.item.quick_allowed && "Quick", entry.item.scheduled_allowed && "Scheduled"].filter(Boolean).join(" + "), options: "", image_available: Boolean(entry.item.image_data) });
+        }
+        return reply({ period: { from, to, timezone: "Asia/Karachi", generated_at: new Date().toISOString() }, orders: orderRows, sales_by_day: salesByDay, sales_by_month: salesByMonth, wallet_entries: walletEntries, menu_items: menuRows });
       }
       if (url.searchParams.get("scope") === "student-wallet") {
         const customer = await customerAuth.customerFromRequest(request);
@@ -395,25 +466,28 @@ export default async (request) => {
       }
       if (url.searchParams.get("scope") === "availability") {
         const catalog = await menuStore.readCatalog();
-        return reply({ availability: Object.fromEntries(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item.available])) });
+        return reply({ availability: Object.fromEntries(catalog.categories.flatMap((category) => category.items).map((item) => [String(item.id), item.available])) }, 200, liveMenuCacheHeaders);
       }
       if (url.searchParams.get("scope") === "menu") {
-        return reply({ categories: (await menuStore.readCatalog()).categories });
+        return reply({ categories: (await menuStore.readCatalog()).categories }, 200, liveMenuCacheHeaders);
       }
       if (url.searchParams.get("scope") === "pickup-windows") {
+        if (!isPickupSlotWindowOpen()) return reply({ windows: [] });
         return reply({ windows: listPickupWindows(await orderDb.listActive()) });
       }
       if (url.searchParams.get("scope") === "counter-order") {
         if (!await staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
         if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to check this order." }, 401);
+        const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
+        if (!isCanteenOpenNow() && !temporary.active) return reply({ error: "The counter is closed outside regular hours." }, 403);
         const id = String(url.searchParams.get("id") ?? "");
         if (!id || id.length > 80) return reply({ error: "Order ID is invalid." }, 400);
         const order = await orderDb.getOrder(id);
         return reply({ order: order ? await withProfileName(order) : null });
       }
       if (["sales-dates", "sales-summary", "sales-months", "sales-month"].includes(url.searchParams.get("scope"))) {
-        if (!await staffConfigured("order_manager")) return reply({ error: "The order manager login is not configured yet." }, 503);
-        if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to the order manager station to view sales summaries." }, 401);
+        if (!await managerConfigured() && !await staffConfigured("developer")) return reply({ error: "The sales reporting login is not configured yet." }, 503);
+        if (!await isManager(request)) return reply({ error: "Sign in to order management or developer access to view sales summaries." }, 401);
         const today = reportDayKey(new Date());
         const allOrders = await orderDb.listAll();
         if (url.searchParams.get("scope") === "sales-dates") {
@@ -467,6 +541,9 @@ export default async (request) => {
         const station = scope === "cash-desk" || scope === "wallet-history" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
         if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
         if (!await isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
+        const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
+        if (!isCanteenOpenNow() && !temporary.active) return reply({ error: "This canteen station is closed outside regular hours." }, 403);
+        if (temporary.active && ["cash-desk", "wallet-history"].includes(scope)) return reply({ error: "The cash desk is closed during a temporary opening." }, 403);
         if (scope === "wallet-history") {
           await importAllLegacyWalletData();
           return reply({ entries: await walletStore.listWalletEntries(200) });
@@ -558,9 +635,9 @@ export default async (request) => {
         return reply({ order: forStudent(existingOrder, customer.role === "student", true), duplicate: true });
       }
       const orderingSettings = await readJSON("settings/ordering");
-      if (orderingSettings?.paused === true) return reply({ error: "We are currently not accepting orders." }, 409);
+      if (orderingSettings?.paused === true || !isCanteenOpenNow()) return reply({ error: "We are currently not accepting orders." }, 409);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
-      if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 4:00 PM Pakistan time." }, 400);
+      if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 5:00 PM." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const catalog = await menuStore.readCatalog();
@@ -650,6 +727,10 @@ export default async (request) => {
       if (!order || typeof order !== "object" || typeof order.id !== "string" || order.id.length > 80 || !/^CB[A-F0-9]{6}$/.test(order.pickup_code ?? "")) return reply({ error: "Order details are invalid." }, 400);
       const existingOrder = await orderDb.getOrder(order.id);
       if (existingOrder) return reply({ order: existingOrder, duplicate: true });
+      const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
+      const regularOpen = isCanteenOpenNow();
+      if (!regularOpen && !temporary.active) return reply({ error: "We are currently not accepting orders." }, 409);
+      if (temporary.active && order.mode !== "QUICK") return reply({ error: "Scheduled orders are unavailable during a temporary opening. Place a quick counter order instead." }, 409);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
@@ -690,6 +771,7 @@ export default async (request) => {
     if (body.action === "cash-topup") {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record a top-up." }, 401);
+      if (!isCanteenOpenNow() || temporaryOpeningState(await readJSON("settings/temporary-opening")).active) return reply({ error: "The cash desk is closed outside regular canteen hours and during temporary openings." }, 403);
       const student_id = String(body.student_id ?? "");
       const amount_paisa = Number(body.amount_paisa);
       if (!/^\d{7}$/.test(student_id) || !Number.isSafeInteger(amount_paisa) || amount_paisa < 5000 || amount_paisa > 500000) return reply({ error: "Enter a 7-digit student ID and a cash amount from Rs 50 to Rs 5,000." }, 400);
@@ -706,6 +788,7 @@ export default async (request) => {
     if (body.action === "mark-cash-paid") {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
+      if (!isCanteenOpenNow() || temporaryOpeningState(await readJSON("settings/temporary-opening")).active) return reply({ error: "The cash desk is closed outside regular canteen hours and during temporary openings." }, 403);
       const orderId = String(body.order_id ?? "");
       const order = orderId && orderId.length <= 80 ? await orderDb.getOrder(orderId) : null;
       if (!order || order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
@@ -716,6 +799,18 @@ export default async (request) => {
       return reply({ order: await orderDb.updateOrder(updated) ?? updated });
     }
 
+    if (body.action === "set-temporary-opening") {
+      if (!await staffConfigured("developer")) return reply({ error: "The developer login is not configured yet." }, 503);
+      if (!await isStaff(request, "developer")) return reply({ error: "Sign in to developer access to change temporary opening hours." }, 401);
+      if (typeof body.enabled !== "boolean") return reply({ error: "Choose whether the canteen is open temporarily." }, 400);
+      if (body.enabled && isCanteenOpenNow()) return reply({ error: "Temporary opening is only available outside the regular canteen schedule." }, 409);
+      const settings = body.enabled
+        ? { enabled: true, opened_at: new Date().toISOString(), expires_at: temporaryOpeningExpiry(), updated_by: request.headers.get("x-canteen-username") || "developer" }
+        : { enabled: false, closed_at: new Date().toISOString(), updated_by: request.headers.get("x-canteen-username") || "developer" };
+      await store.setJSON("settings/temporary-opening", settings);
+      return reply({ temporary_open: settings.enabled, temporary_open_expires_at: settings.expires_at ?? null });
+    }
+
     if (!await managerConfigured()) return reply({ error: "Canteen access has not been configured yet." }, 503);
     if (!await isManager(request)) return reply({ error: "Sign in to the order control station to change shared data." }, 401);
 
@@ -724,6 +819,7 @@ export default async (request) => {
       await store.setJSON("settings/ordering", { paused: body.paused, updated_at: new Date().toISOString(), updated_by: request.headers.get("x-canteen-username") || "order_manager" });
       return reply({ paused: body.paused });
     }
+
 
     if (body.action === "set-item-of-day") {
       if (!Array.isArray(body.schedule) || body.schedule.length > 20) return reply({ error: "Keep no more than 20 items in the item of the day list." }, 400);

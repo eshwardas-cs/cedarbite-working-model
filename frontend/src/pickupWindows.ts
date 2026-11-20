@@ -10,7 +10,8 @@ const SLOT_MS = 10 * 60 * 1000;
 const MINIMUM_LEAD_MS = 10 * 60 * 1000;
 const OPENING_MINUTE = 8 * 60;
 const PREVIEW_MINUTE = OPENING_MINUTE - 10;
-const CLOSING_MINUTE = 16 * 60;
+const CLOSING_MINUTE = 17 * 60;
+const OPEN_DAYS = new Set([1, 2, 3, 4]);
 
 function pakistanClock(now: Date) {
   const shifted = new Date(now.getTime() + PAKISTAN_OFFSET_MS);
@@ -18,6 +19,7 @@ function pakistanClock(now: Date) {
     year: shifted.getUTCFullYear(),
     month: shifted.getUTCMonth(),
     day: shifted.getUTCDate(),
+    weekday: shifted.getUTCDay(),
     minute: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
   };
 }
@@ -30,6 +32,7 @@ function isPakistanDate(value: Date, year: number, month: number, day: number) {
 /** Build today's 10-minute schedule using Pakistan local time, independent of device timezone. */
 export function samplePickupWindows(now: Date = new Date()): PickupWindow[] {
   const { year, month, day } = pakistanClock(now);
+  if (!OPEN_DAYS.has(pakistanClock(now).weekday)) return [];
   const localMidnightUtc = Date.UTC(year, month, day) - PAKISTAN_OFFSET_MS;
   const windows: PickupWindow[] = [];
 
@@ -50,7 +53,7 @@ export function samplePickupWindows(now: Date = new Date()): PickupWindow[] {
 /** Keep the next six valid slots, starting only once the 7:50 AM preview opens. */
 export function availablePickupWindows(windows: PickupWindow[], now: Date = new Date()): PickupWindow[] {
   const localNow = pakistanClock(now);
-  if (localNow.minute < PREVIEW_MINUTE || localNow.minute >= CLOSING_MINUTE) return [];
+  if (!OPEN_DAYS.has(localNow.weekday) || localNow.minute < PREVIEW_MINUTE || localNow.minute >= CLOSING_MINUTE) return [];
 
   const earliestStart = Math.ceil((now.getTime() + MINIMUM_LEAD_MS) / SLOT_MS) * SLOT_MS;
   return windows

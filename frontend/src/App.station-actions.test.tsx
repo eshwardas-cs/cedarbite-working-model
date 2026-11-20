@@ -31,6 +31,8 @@ describe("cash desk and order workflow actions", () => {
   let cashPaid: boolean;
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-19T03:00:00.000Z"));
     vi.spyOn(window, "setInterval").mockReturnValue(0 as unknown as number);
     localStorage.clear();
     sessionStorage.clear();
@@ -82,6 +84,7 @@ describe("cash desk and order workflow actions", () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("records cash received and removes that order from the unpaid cash list", async () => {

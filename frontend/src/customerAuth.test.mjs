@@ -29,7 +29,7 @@ describe("customerFromRequest", () => {
   it("returns the student ID from the profile email, using the base Supabase address", async () => {
     const fetchMock = vi.fn(async (url) => String(url).includes("/auth/v1/user") ? json({ id: "u1" }) : json([{ email: "1234567@cedar.edu.pk", role: "student" }]));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(customerFromRequest(withToken("t"))).resolves.toEqual({ user_id: "u1", email: "1234567@cedar.edu.pk", role: "student", student_id: "1234567" });
+    await expect(customerFromRequest(withToken("t"))).resolves.toEqual({ user_id: "u1", email: "1234567@cedar.edu.pk", role: "student", full_name: null, student_id: "1234567" });
     expect(String(fetchMock.mock.calls[0][0])).toBe("https://example.supabase.co/auth/v1/user");
   });
 

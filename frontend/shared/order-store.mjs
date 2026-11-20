@@ -114,6 +114,23 @@ export async function listAll() {
   return orders(await rest("orders?select=data&order=created_at.asc"));
 }
 
+export async function listCreatedBetween(fromInclusive, toExclusive, maxRows = 20_000) {
+  const pageSize = 1_000;
+  const result = [];
+  for (let offset = 0; offset < maxRows; offset += pageSize) {
+    const page = orders(await rest(
+      `orders?select=data&created_at=gte.${encodeURIComponent(fromInclusive)}&created_at=lt.${encodeURIComponent(toExclusive)}&order=created_at.asc&limit=${pageSize}&offset=${offset}`,
+    ));
+    result.push(...page);
+    if (page.length < pageSize) return result;
+  }
+  const probe = orders(await rest(
+    `orders?select=data&created_at=gte.${encodeURIComponent(fromInclusive)}&created_at=lt.${encodeURIComponent(toExclusive)}&order=created_at.asc&limit=1&offset=${maxRows}`,
+  ));
+  if (probe.length) throw new OrderStoreError("The selected period contains too many orders to export at once. Choose a shorter date range.", 413);
+  return result;
+}
+
 // One signed-in person's own orders, newest first.
 export async function listForCustomer(userId, limit = 100) {
   return orders(await rest(`orders?select=data&customer_user_id=eq.${encodeURIComponent(String(userId))}&order=created_at.desc&limit=${Number(limit)}`));
@@ -133,10 +150,11 @@ export async function insertOrder(order) {
 // Saves changes to an existing order. With expectedStatus, it only saves if nobody changed the
 // status in the meantime (two screens pressing the same button); returns the saved order or null.
 export async function updateOrder(order, { expectedStatus } = {}) {
-  return rest("rpc/cedar_update_order_atomic", {
+  const result = await rest("rpc/cedar_update_order_atomic", {
     method: "POST",
     body: { p_row: rowFromOrder(order), p_expected_status: expectedStatus ?? null, p_actor: "staff" },
   });
+  return Array.isArray(result) ? result[0] ?? null : result ?? null;
 }
 
 export async function voidOrder(id, actor = "manager", reason = "Removed by order manager", allowedStatuses = ["SUBMITTED", "COLLECTED", "CANCELLED"]) {

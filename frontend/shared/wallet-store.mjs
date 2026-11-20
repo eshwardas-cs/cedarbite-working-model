@@ -62,6 +62,23 @@ export async function listWalletEntries(limit = 200) {
   return Array.isArray(entries) ? entries : [];
 }
 
+export async function listWalletEntriesBetween(fromInclusive, toExclusive, maxRows = 20_000) {
+  const pageSize = 1_000;
+  const result = [];
+  for (let offset = 0; offset < maxRows; offset += pageSize) {
+    const page = await call(
+      `wallet_entries?select=id,student_id,kind,amount_paisa,method,label,recorded_by,order_id,created_at&created_at=gte.${encodeURIComponent(fromInclusive)}&created_at=lt.${encodeURIComponent(toExclusive)}&order=created_at.asc&limit=${pageSize}&offset=${offset}`,
+    );
+    result.push(...(Array.isArray(page) ? page : []));
+    if (!Array.isArray(page) || page.length < pageSize) return result;
+  }
+  const probe = await call(
+    `wallet_entries?select=id&created_at=gte.${encodeURIComponent(fromInclusive)}&created_at=lt.${encodeURIComponent(toExclusive)}&order=created_at.asc&limit=1&offset=${maxRows}`,
+  );
+  if (Array.isArray(probe) && probe.length) throw new WalletStoreError("The selected period contains too many wallet records to export at once. Choose a shorter date range.", 413);
+  return result;
+}
+
 export async function recordCashTopup({ studentId, amountPaisa, reference, label, actor }) {
   const result = await call("rpc/cedar_wallet_cash_topup", {
     method: "POST",
