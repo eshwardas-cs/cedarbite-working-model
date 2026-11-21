@@ -402,7 +402,8 @@ export default async (request) => {
         const settings = await readJSON("settings/ordering") || { paused: false };
         const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
         const regularOpen = isCanteenOpenNow();
-        return reply({ paused: settings.paused === true, manual_paused: settings.paused === true, closed: !regularOpen, temporary_open: temporary.active, temporary_open_expires_at: temporary.expires_at, counter_open: regularOpen || temporary.active, kitchen_open: regularOpen || temporary.active, manager_open: regularOpen || temporary.active, cashier_open: regularOpen && !temporary.active, student_orders_open: regularOpen && settings.paused !== true, operation_mode: temporary.active ? "temporary" : regularOpen ? "regular" : "closed" });
+        const allInterfacesOpen = regularOpen || temporary.active;
+        return reply({ paused: settings.paused === true, manual_paused: settings.paused === true, closed: !allInterfacesOpen, temporary_open: temporary.active, temporary_open_expires_at: temporary.expires_at, counter_open: true, kitchen_open: true, manager_open: true, cashier_open: true, student_orders_open: allInterfacesOpen && settings.paused !== true, operation_mode: temporary.active ? "temporary" : regularOpen ? "regular" : "closed" });
       }
       if (url.searchParams.get("scope") === "item-of-day") {
         const schedule = await readJSON("menu/item-of-day");
@@ -478,8 +479,6 @@ export default async (request) => {
       if (url.searchParams.get("scope") === "counter-order") {
         if (!await staffConfigured("order_taker")) return reply({ error: "The counter orders login is not configured yet." }, 503);
         if (!await isStaff(request, "order_taker")) return reply({ error: "Sign in to the counter orders station to check this order." }, 401);
-        const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
-        if (!isCanteenOpenNow() && !temporary.active) return reply({ error: "The counter is closed outside regular hours." }, 403);
         const id = String(url.searchParams.get("id") ?? "");
         if (!id || id.length > 80) return reply({ error: "Order ID is invalid." }, 400);
         const order = await orderDb.getOrder(id);
@@ -541,9 +540,6 @@ export default async (request) => {
         const station = scope === "cash-desk" || scope === "wallet-history" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
         if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
         if (!await isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
-        const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
-        if (!isCanteenOpenNow() && !temporary.active) return reply({ error: "This canteen station is closed outside regular hours." }, 403);
-        if (temporary.active && ["cash-desk", "wallet-history"].includes(scope)) return reply({ error: "The cash desk is closed during a temporary opening." }, 403);
         if (scope === "wallet-history") {
           await importAllLegacyWalletData();
           return reply({ entries: await walletStore.listWalletEntries(200) });
@@ -635,7 +631,8 @@ export default async (request) => {
         return reply({ order: forStudent(existingOrder, customer.role === "student", true), duplicate: true });
       }
       const orderingSettings = await readJSON("settings/ordering");
-      if (orderingSettings?.paused === true || !isCanteenOpenNow()) return reply({ error: "We are currently not accepting orders." }, 409);
+      const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
+      if (orderingSettings?.paused === true || (!isCanteenOpenNow() && !temporary.active)) return reply({ error: "We are currently not accepting orders." }, 409);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead, between 8:00 AM and 5:00 PM." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
@@ -730,7 +727,6 @@ export default async (request) => {
       const temporary = temporaryOpeningState(await readJSON("settings/temporary-opening"));
       const regularOpen = isCanteenOpenNow();
       if (!regularOpen && !temporary.active) return reply({ error: "We are currently not accepting orders." }, 409);
-      if (temporary.active && order.mode !== "QUICK") return reply({ error: "Scheduled orders are unavailable during a temporary opening. Place a quick counter order instead." }, 409);
       if (order.mode !== "QUICK" && order.mode !== "SCHEDULED") return reply({ error: "Order type is invalid." }, 400);
       if (order.mode === "SCHEDULED" && !validScheduledPickupWindow(order.pickup_window)) return reply({ error: "Choose a valid 10-minute pickup slot at least 10 minutes ahead." }, 400);
       if (order.mode === "QUICK" && order.pickup_window != null) return reply({ error: "Quick Orders do not use a scheduled pickup slot." }, 400);
@@ -771,7 +767,6 @@ export default async (request) => {
     if (body.action === "cash-topup") {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record a top-up." }, 401);
-      if (!isCanteenOpenNow() || temporaryOpeningState(await readJSON("settings/temporary-opening")).active) return reply({ error: "The cash desk is closed outside regular canteen hours and during temporary openings." }, 403);
       const student_id = String(body.student_id ?? "");
       const amount_paisa = Number(body.amount_paisa);
       if (!/^\d{7}$/.test(student_id) || !Number.isSafeInteger(amount_paisa) || amount_paisa < 5000 || amount_paisa > 500000) return reply({ error: "Enter a 7-digit student ID and a cash amount from Rs 50 to Rs 5,000." }, 400);
@@ -788,7 +783,6 @@ export default async (request) => {
     if (body.action === "mark-cash-paid") {
       if (!await staffConfigured("cashier")) return reply({ error: "The cash desk login is not configured yet." }, 503);
       if (!await isStaff(request, "cashier")) return reply({ error: "Sign in to the cash desk to record cash received." }, 401);
-      if (!isCanteenOpenNow() || temporaryOpeningState(await readJSON("settings/temporary-opening")).active) return reply({ error: "The cash desk is closed outside regular canteen hours and during temporary openings." }, 403);
       const orderId = String(body.order_id ?? "");
       const order = orderId && orderId.length <= 80 ? await orderDb.getOrder(orderId) : null;
       if (!order || order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
