@@ -741,9 +741,9 @@ export default async (request) => {
       const customerType = order.customer_type ?? "STUDENT";
       const studentId = order.student_id == null ? null : String(order.student_id);
       const customerName = typeof order.customer_name === "string" ? order.customer_name.trim() : "";
-      if (!new Set(["STUDENT", "TEACHER", "GUEST"]).has(customerType)) return reply({ error: "Choose whether the order is for a student, teacher, or guest." }, 400);
+      if (!new Set(["STUDENT", "TEACHER", "GUEST", "NON_STUDENT"]).has(customerType)) return reply({ error: "Choose whether the order is for a student or teacher/guest." }, 400);
       if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId ?? "")) return reply({ error: "Student ID must contain seven digits." }, 400);
-      if ((customerType === "TEACHER" || customerType === "GUEST") && (!customerName || customerName.length > 100)) return reply({ error: `Enter the ${customerType === "GUEST" ? "guest’s" : "teacher’s"} name (up to 100 characters).` }, 400);
+      if ((customerType === "TEACHER" || customerType === "GUEST" || customerType === "NON_STUDENT") && (!customerName || customerName.length > 100)) return reply({ error: `Enter the ${customerType === "GUEST" ? "guest’s" : customerType === "NON_STUDENT" ? "teacher or guest" : "teacher’s"} name (up to 100 characters).` }, 400);
       let studentProfile = customerType === "STUDENT"
         ? await customerAuth.studentProfileFromId(studentId, { allowCounterName: true, allowMissingName: true })
         : null;
