@@ -6,7 +6,12 @@
   directory = "frontend/netlify/functions"
 
 [functions."order-notification-scheduler"]
-  schedule = "* * * * *"
+  schedule = "*/5 3-11 * * 1-4"
+
+[[redirects]]
+  from = "/developeraccess"
+  to = "/index.html"
+  status = 200
 
 [[redirects]]
   from = "/stations"
@@ -43,10 +48,6 @@
   to = "/index.html"
   status = 200
 
-[[redirects]]
-  from = "/order-confirmation"
-  to = "/index.html"
-  status = 200
 
 [[redirects]]
   from = "/about"
@@ -60,5 +61,20 @@
 
 [[redirects]]
   from = "/contact-us"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/terms-and-conditions"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/team"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/order-confirmation"
   to = "/index.html"
   status = 200

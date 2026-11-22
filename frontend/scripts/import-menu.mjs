@@ -1,6 +1,6 @@
 // One-time import: copies the menu from src/catalog.json into Supabase.
 //   - creates the categories and items
-//   - turns each embedded photo back into a .jpg and uploads it to the menu-images folder
+//   - uploads each photo file to the menu-images folder
 //
 // Run from the frontend folder:
 //   node scripts/import-menu.mjs            (dry run: checks everything, changes nothing)
@@ -75,13 +75,23 @@ for (const cat of categories) {
   for (const item of cat.items) {
     let image_path = null;
     if (item.image_data) {
-      const [header, b64] = item.image_data.split(",", 2);
-      const contentType = header.match(/^data:(.*?);base64$/)?.[1] ?? "image/jpeg";
+      let contentType;
+      let imageBytes;
+      if (item.image_data.startsWith("data:")) {
+        const [header, b64] = item.image_data.split(",", 2);
+        contentType = header.match(/^data:(.*?);base64$/)?.[1] ?? "image/jpeg";
+        imageBytes = Buffer.from(b64, "base64");
+      } else if (/^\/assets\/menu-images\/[a-f0-9]{64}\.jpg$/.test(item.image_data)) {
+        contentType = "image/jpeg";
+        imageBytes = readFileSync(join(here, "../public", item.image_data.slice(1)));
+      } else {
+        throw new Error(`Photo path is invalid for "${item.name}".`);
+      }
       const ext = contentType === "image/png" ? "png" : contentType === "image/webp" ? "webp" : "jpg";
       image_path = `items/${slug(item.name)}.${ext}`;
       const { error } = await supabase.storage
         .from(BUCKET)
-        .upload(image_path, Buffer.from(b64, "base64"), { contentType, upsert: true });
+        .upload(image_path, imageBytes, { contentType, upsert: true });
       if (error) throw new Error(`Photo upload failed for "${item.name}": ${error.message}`);
       uploaded++;
     }

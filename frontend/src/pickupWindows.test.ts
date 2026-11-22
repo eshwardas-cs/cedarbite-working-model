@@ -37,21 +37,21 @@ describe("scheduled pickup slots (Pakistan time)", () => {
     expect(slots.some((slot) => slot.id === 99 || slot.id === 100 || slot.id === 101)).toBe(false);
   });
 
-  it("stops at 4 PM and shows nothing after closing", () => {
-    const beforeLast = pk("2026-11-05T10:39:00Z");
+  it("stops at 5 PM and shows nothing after closing", () => {
+    const beforeLast = pk("2026-11-05T11:39:00Z");
     const last = availablePickupWindows(samplePickupWindows(beforeLast), beforeLast);
-    expect(last.map((slot) => [slot.start_at, slot.end_at])).toContainEqual(["2026-11-05T10:50:00.000Z", "2026-11-05T11:00:00.000Z"]);
-    const closing = pk("2026-11-05T11:00:00Z");
+    expect(last.map((slot) => [slot.start_at, slot.end_at])).toContainEqual(["2026-11-05T11:50:00.000Z", "2026-11-05T12:00:00.000Z"]);
+    const closing = pk("2026-11-05T12:00:00Z");
     expect(availablePickupWindows(samplePickupWindows(closing), closing)).toHaveLength(0);
     const evening = pk("2026-11-05T14:23:00Z");
     expect(availablePickupWindows(samplePickupWindows(evening), evening)).toHaveLength(0);
   });
 
   it("generates the correct Pakistan calendar day regardless of device timezone", () => {
-    const now = pk("2026-11-05T20:30:00Z");
+    const now = pk("2026-11-04T20:30:00Z");
     const slots = samplePickupWindows(now);
-    expect(slots).toHaveLength(48);
-    expect(slots[0].start_at).toBe("2026-11-06T03:00:00.000Z");
-    expect(slots.at(-1)?.end_at).toBe("2026-11-06T11:00:00.000Z");
+    expect(slots).toHaveLength(54);
+    expect(slots[0].start_at).toBe("2026-11-05T03:00:00.000Z");
+    expect(slots.at(-1)?.end_at).toBe("2026-11-05T12:00:00.000Z");
   });
 });

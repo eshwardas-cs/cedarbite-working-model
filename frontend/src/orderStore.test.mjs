@@ -33,8 +33,8 @@ describe("order store", () => {
   it("only updates when the status is still the one we expect", async () => {
     await expect(updateOrder({ id: "x1", status: "PREPARING" }, { expectedStatus: "SUBMITTED" })).resolves.toBeNull();
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("orders?id=eq.x1&status=eq.SUBMITTED");
-    expect(init.method).toBe("PATCH");
-    expect(JSON.parse(init.body)).not.toHaveProperty("id");
+    expect(String(url)).toContain("/rpc/cedar_update_order_atomic");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toMatchObject({ p_expected_status: "SUBMITTED", p_row: { id: "x1", status: "PREPARING" } });
   });
 });

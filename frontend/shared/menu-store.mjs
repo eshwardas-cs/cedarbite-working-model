@@ -93,7 +93,7 @@ function toOptions(rows) {
 }
 
 /**
- * Checks the options sent by the staff screen (same rules as Eshwar's design):
+ * Validates options sent by the staff screen before writing them to Supabase:
  * at most 25, each with a 1-80 character name, names unique for the item, available on/off.
  */
 function cleanOptions(options) {

@@ -23,7 +23,7 @@ test("rejects non-ten-minute, misaligned, and cross-day windows", () => {
 
 test("lists the next 10-minute windows and removes full slots", () => {
   const now = Date.parse("2026-11-05T02:51:00Z");
-  const fullSlotOrders = Array.from({ length: 8 }, (_, index) => ({
+  const fullSlotOrders = Array.from({ length: 20 }, (_, index) => ({
     id: `order-${index}`,
     mode: "SCHEDULED",
     pickup_window: window("2026-11-05T03:10:00Z", "2026-11-05T03:20:00Z"),

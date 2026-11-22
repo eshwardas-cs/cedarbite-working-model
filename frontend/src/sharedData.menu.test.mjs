@@ -1,6 +1,6 @@
 // Staff menu changes and order prices go through Supabase (via shared/menu-store.mjs),
 // never Netlify storage, and only a signed-in order manager can change the menu.
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockStore = vi.hoisted(() => {
   const values = new Map();
@@ -54,20 +54,80 @@ import sharedData from "../netlify/functions/shared-data.mjs";
 
 const ENDPOINT = "https://cedarbite.test/.netlify/functions/shared-data";
 const MANAGER = { "x-canteen-role": "order_manager", "x-canteen-username": "manager", "x-canteen-password": "manager-test-password" };
+const DEVELOPER = { "x-canteen-role": "developer", "x-canteen-username": "developer", "x-canteen-password": "developer-test-password" };
 const post = (body, headers = {}) => sharedData(new Request(ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) }));
 const get = (scope) => sharedData(new Request(`${ENDPOINT}?scope=${scope}`));
+const getDeveloperExport = (from = "2026-11-19", to = "2026-11-19", headers = {}) => sharedData(new Request(`${ENDPOINT}?scope=developer-export&from=${from}&to=${to}`, { headers }));
 const studentOrder = (items) => ({ action: "create-order", order: { id: "2f8e0942-21a1-49db-8134-26b6fc73e008", pickup_code: "CB12AB34", mode: "QUICK", payment_method: "cash", items } });
 
 const savedPassword = process.env.CANTEEN_DASHBOARD_PASSWORD;
+const savedCashierPassword = process.env.CANTEEN_CASHIER_PASSWORD;
+const savedDeveloperPassword = process.env.CANTEEN_DEVELOPER_PASSWORD;
 afterAll(() => { process.env.CANTEEN_DASHBOARD_PASSWORD = savedPassword; });
+afterAll(() => { if (savedCashierPassword === undefined) delete process.env.CANTEEN_CASHIER_PASSWORD; else process.env.CANTEEN_CASHIER_PASSWORD = savedCashierPassword; });
+afterAll(() => { if (savedDeveloperPassword === undefined) delete process.env.CANTEEN_DEVELOPER_PASSWORD; else process.env.CANTEEN_DEVELOPER_PASSWORD = savedDeveloperPassword; });
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-19T03:00:00.000Z"));
   process.env.CANTEEN_DASHBOARD_PASSWORD = "manager-test-password";
+  process.env.CANTEEN_DEVELOPER_PASSWORD = "developer-test-password";
   mockStore.values.clear();
   mockStore.setJSON.mockClear();
   customer.customerFromRequest.mockClear();
   orderDb.reset();
   for (const fn of ["readCatalog", "setAvailability", "setPrice", "removeItem", "addItem", "updateItem", "addCategory", "removeCategory", "reorderMenu"]) menu[fn].mockClear();
+});
+afterEach(() => { vi.useRealTimers(); });
+
+describe("developer data export access", () => {
+  it("keeps the export private to the developer station", async () => {
+    const response = await getDeveloperExport();
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects an invalid export date range before reading records", async () => {
+    const response = await getDeveloperExport("2026-11-20", "2026-11-19", DEVELOPER);
+    expect(response.status).toBe(400);
+    expect(mockStore.list).not.toHaveBeenCalled();
+  });
+});
+
+describe("temporary canteen opening", () => {
+  it("allows only developer access to change temporary hours", async () => {
+    const response = await post({ action: "set-temporary-opening", enabled: true }, MANAGER);
+    expect(response.status).toBe(401);
+    expect(mockStore.values.has("settings/temporary-opening")).toBe(false);
+  });
+
+  it("does not replace the regular schedule while it is already open", async () => {
+    const response = await post({ action: "set-temporary-opening", enabled: true }, DEVELOPER);
+    expect(response.status).toBe(409);
+    expect(mockStore.values.has("settings/temporary-opening")).toBe(false);
+  });
+
+  it("opens all interfaces while the temporary opening is active", async () => {
+    vi.setSystemTime(new Date("2026-11-21T03:00:00.000Z"));
+    const response = await post({ action: "set-temporary-opening", enabled: true }, DEVELOPER);
+    expect(response.status).toBe(200);
+    expect(mockStore.values.get("settings/temporary-opening").expires_at).toBe("2026-11-21T19:00:00.000Z");
+    const status = await (await get("ordering-status")).json();
+    expect(status.temporary_open).toBe(true);
+    expect(status.counter_open).toBe(true);
+    expect(status.kitchen_open).toBe(true);
+    expect(status.manager_open).toBe(true);
+    expect(status.cashier_open).toBe(true);
+    expect(status.student_orders_open).toBe(true);
+  });
+
+  it("treats an expired temporary opening as closed", async () => {
+    mockStore.values.set("settings/temporary-opening", { enabled: true, expires_at: "2026-11-19T02:59:59.000Z" });
+    const status = await (await get("ordering-status")).json();
+    expect(status.temporary_open).toBe(false);
+    expect(status.counter_open).toBe(true);
+    expect(status.kitchen_open).toBe(true);
+    expect(status.cashier_open).toBe(true);
+  });
 });
 
 describe("staff menu changes", () => {
@@ -134,7 +194,7 @@ describe("menu reads and order prices come from Supabase", () => {
   it("refuses an order for a sold-out item", async () => {
     const response = await post(studentOrder([{ item_id: 2, name: "Wonton", quantity: 1 }]));
     expect(response.status).toBe(409);
-    expect(orderDb.insertOrder).not.toHaveBeenCalled();
+    expect(orderDb.createOrderAtomic).not.toHaveBeenCalled();
   });
 });
 
@@ -143,7 +203,7 @@ describe("online orders need a Cedar sign-in", () => {
     customer.customerFromRequest.mockRejectedValueOnce(new customer.CustomerAuthError("Sign in with your Cedar Google account to place an order."));
     const response = await post(studentOrder([{ item_id: 1, name: "Samosa", quantity: 1 }]));
     expect(response.status).toBe(401);
-    expect(orderDb.insertOrder).not.toHaveBeenCalled();
+    expect(orderDb.createOrderAtomic).not.toHaveBeenCalled();
   });
 
   it("takes the student ID from the sign-in, not from the browser", async () => {
@@ -154,16 +214,17 @@ describe("online orders need a Cedar sign-in", () => {
     const saved = orderDb.rows.get(body.order.id);
     expect(saved).toMatchObject({ student_id: "1234567", customer_user_id: customer.student.user_id, customer_email: "1234567@cedar.edu.pk" });
     const { order } = await response.json();
-    expect(order).not.toHaveProperty("student_id");
+    expect(order).toHaveProperty("student_id", "1234567");
     expect(order).not.toHaveProperty("customer_email");
   });
 
-  it("refuses the wallet (nothing can check a balance yet) instead of marking the order paid", async () => {
+  it("sends wallet payment through the atomic order-and-wallet transaction", async () => {
     const body = studentOrder([{ item_id: 1, name: "Samosa", quantity: 1 }]);
     body.order.payment_method = "wallet";
     const response = await post(body);
-    expect(response.status).toBe(400);
-    expect(orderDb.insertOrder).not.toHaveBeenCalled();
+    expect(response.status).toBe(201);
+    expect(orderDb.createOrderAtomic).toHaveBeenCalledWith(expect.objectContaining({ payment_method: "wallet", payment_status: "PENDING" }), expect.any(String));
+    expect(orderDb.rows.get(body.order.id)).toMatchObject({ payment_method: "wallet", payment_status: "PAID" });
   });
 
   it("does not let another account reuse someone else's order reference", async () => {
@@ -193,7 +254,7 @@ describe("My orders for Google users", () => {
     const { orders } = await (await myOrders()).json();
     expect(orders.map((o) => o.pickup_code).sort()).toEqual(["CB111111", "CB333333"]);
     for (const o of orders) {
-      expect(o).not.toHaveProperty("student_id");
+      expect(o).toHaveProperty("student_id", o.pickup_code === "CB222222" ? "7654321" : "1234567");
       expect(o).not.toHaveProperty("customer_email");
       expect(o).not.toHaveProperty("customer_user_id");
     }
@@ -214,7 +275,7 @@ describe("My orders for Google users", () => {
 
 describe("orders are kept in Supabase", () => {
   const id = "55555555-5555-4555-8555-555555555555";
-  const place = () => post({ action: "create-order", order: { id, pickup_code: "CB555555", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
+  const place = () => post({ action: "create-order", order: { id, pickup_code: "CB555555", mode: "SCHEDULED", pickup_window: { start_at: "2026-11-19T03:10:00.000Z", end_at: "2026-11-19T03:20:00.000Z" }, payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
   const setStatus = (status) => post({ action: "set-status", order_id: id, status }, MANAGER);
   const stationList = (scope) => sharedData(new Request(`${ENDPOINT}?scope=${scope}`, { headers: MANAGER }));
 
@@ -222,6 +283,24 @@ describe("orders are kept in Supabase", () => {
     expect((await place()).status).toBe(201);
     expect(orderDb.rows.get(id)).toMatchObject({ status: "SUBMITTED", total_paisa: 15000 });
     expect([...mockStore.values.keys()].some((key) => key.startsWith("queue/") || key.startsWith("customers/"))).toBe(false);
+  });
+
+  it("holds quick orders for manager acceptance, then marks them ready", async () => {
+    const quick = { action: "create-order", order: { id, pickup_code: "CB555555", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } };
+    expect((await post(quick)).status).toBe(201);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "SUBMITTED", payment_status: "UNPAID" });
+    const accepted = await post({ action: "set-status", order_id: id, status: "READY" }, MANAGER);
+    expect(accepted.status).toBe(200);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "READY", ready_at: expect.any(String) });
+  });
+
+  it("records cash as received when an order is marked collected", async () => {
+    await place();
+    await setStatus("PREPARING");
+    await setStatus("READY");
+    const response = await setStatus("COLLECTED");
+    expect(response.status).toBe(200);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "COLLECTED", payment_status: "PAID", cash_received_at: expect.any(String) });
   });
 
   it("moves an order through the canteen and into history", async () => {
@@ -248,17 +327,17 @@ describe("orders are kept in Supabase", () => {
     expect((await post({ action: "set-status", order_id: id, status: "COLLECTED" }, MANAGER)).status).toBe(409);
   });
 
-  it("only deletes new orders, and only completed ones from history", async () => {
+  it("voids new orders reversibly, and only completed ones from history", async () => {
     await place();
     expect((await post({ action: "delete-history-order", order_id: id }, MANAGER)).status).toBe(404);
     expect((await post({ action: "delete-order", order_id: id }, MANAGER)).status).toBe(200);
-    expect(orderDb.rows.has(id)).toBe(false);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "VOIDED", void_reason: "Accidental or invalid new order" });
   });
 });
 
 describe("students can cancel only before the canteen accepts", () => {
   const id = "66666666-6666-4666-8666-666666666666";
-  const place = () => post({ action: "create-order", order: { id, pickup_code: "CB666666", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
+  const place = () => post({ action: "create-order", order: { id, pickup_code: "CB666666", mode: "SCHEDULED", pickup_window: { start_at: "2026-11-19T03:10:00.000Z", end_at: "2026-11-19T03:20:00.000Z" }, payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
   const cancel = (orderId = id) => post({ action: "cancel-order", order_id: orderId });
   const stationList = (scope) => sharedData(new Request(`${ENDPOINT}?scope=${scope}`, { headers: MANAGER }));
 
@@ -327,11 +406,43 @@ describe("menu item options (e.g. drink flavours)", () => {
     expect((await drink({ option_id: "opt-mango" })).status).toBe(409);
     expect((await drink({ option_id: "opt-nope" })).status).toBe(409);
     expect((await drink({ option_id: 5 })).status).toBe(400);
-    expect(orderDb.insertOrder).not.toHaveBeenCalled();
+    expect(orderDb.createOrderAtomic).not.toHaveBeenCalled();
   });
 
   it("refuses an option on an item that has none", async () => {
     const response = await post({ action: "create-order", order: { id, pickup_code: "CB777777", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1, option_id: "opt-cola" }] } });
     expect(response.status).toBe(409);
+  });
+});
+
+describe("manager station password reset", () => {
+  it("stores a hashed station password and accepts it at the next login", async () => {
+    delete process.env.CANTEEN_CASHIER_PASSWORD;
+    const newPassword = "Cashdesk-reset-2026!";
+    const reset = await post({ action: "reset-station-password", station: "cashier", new_password: newPassword }, MANAGER);
+    expect(reset.status).toBe(200);
+
+    const saved = mockStore.values.get("staff-passwords/cashier");
+    expect(saved).toMatchObject({ salt: expect.any(String), hash: expect.any(String) });
+    expect(saved.hash).not.toBe(newPassword);
+
+    const login = (password) => post({ action: "login", station: "cashier", username: "cashdesk", password });
+    expect((await login("old-cashier-password" )).status).toBe(401);
+    const accepted = await login(newPassword);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ ok: true, station: "cashier", username: "cashdesk" });
+  });
+});
+
+describe("homepage banner settings", () => {
+  it("returns a saved replacement image from the student-facing banner endpoint", async () => {
+    const slides = [{ id: "cedarbite-hero-1", kicker: "CEDAR COLLEGE", title: "Fresh lunch", highlight: "made easy.", description: "Browse the menu and collect on campus.", image_data: "data:image/jpeg;base64,AA==", active: true }];
+    const saved = await post({ action: "set-hero-slides", slides }, MANAGER);
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ slides });
+
+    const studentView = await get("hero-slides");
+    expect(studentView.status).toBe(200);
+    expect(await studentView.json()).toEqual({ slides });
   });
 });
