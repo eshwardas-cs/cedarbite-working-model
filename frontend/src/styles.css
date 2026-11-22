@@ -454,6 +454,10 @@ img.counter-item-visual{display:block}
 .receipt-print-root{display:none}
 .receipt-print-button{width:35px;height:35px;flex:none;display:grid;place-items:center;border:1px solid #dce4eb;border-radius:7px;background:#f6f8fb;color:#173c64;font-size:17px}
 .receipt-print-button:hover{border-color:#d1ad24;background:#fff5cf;color:#102b4c}
+:root[data-theme="dark"] .refund-payment-note{color:#aebdd0}
+.refund-payment-note{font-size:12px;color:#66788c}
+.status-pill{display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;border:1px solid #b9e4cf;border-radius:999px;background:#eaf8f0;color:#17623d;font-size:12px;font-weight:800}
+:root[data-theme="dark"] .status-pill{border-color:#37694f;background:#173b2d;color:#a6e6bf}
 :root[data-theme="dark"] .receipt-print-button{border-color:#40546b;background:#1b2e43;color:#f1f5fa}
 :root[data-theme="dark"] .receipt-print-button:hover{border-color:#c5a834;background:#3a321b;color:#ffe08a}
 .history-actions{display:flex;align-items:center;gap:7px}
@@ -563,8 +567,9 @@ img.counter-item-visual{display:block}
   @page{size:auto;margin:5mm}
   html,body{min-width:0!important;margin:0!important;padding:0!important;background:#fff!important;color:#111!important}
   body *{visibility:hidden!important}
+  body>*:not(.receipt-print-root){display:none!important}
   .receipt-print-root,.receipt-print-root *{visibility:visible!important}
-  .receipt-print-root{display:block!important;position:fixed!important;inset:0!important;z-index:2147483647!important;width:100%!important;background:#fff!important;color:#111!important}
+  .receipt-print-root{display:block!important;position:static!important;inset:auto!important;z-index:auto!important;width:100%!important;height:auto!important;min-height:0!important;overflow:visible!important;background:#fff!important;color:#111!important}
   .receipt-print{width:72mm;max-width:100%;margin:0 auto;padding:3mm 2mm;font:10pt/1.35 Arial,Helvetica,sans-serif;color:#111;background:#fff;break-inside:avoid}
   .receipt-print header{display:grid;justify-items:center;gap:2px;margin-bottom:7px}
   .receipt-brand{display:flex;align-items:center;justify-content:center;gap:7px;color:#111}

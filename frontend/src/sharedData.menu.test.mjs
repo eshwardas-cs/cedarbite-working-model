@@ -106,7 +106,7 @@ describe("temporary canteen opening", () => {
     expect(mockStore.values.has("settings/temporary-opening")).toBe(false);
   });
 
-  it("opens counter, kitchen, and manager through midnight while keeping students and cash desk closed", async () => {
+  it("opens all interfaces while the temporary opening is active", async () => {
     vi.setSystemTime(new Date("2026-11-21T03:00:00.000Z"));
     const response = await post({ action: "set-temporary-opening", enabled: true }, DEVELOPER);
     expect(response.status).toBe(200);
@@ -116,8 +116,8 @@ describe("temporary canteen opening", () => {
     expect(status.counter_open).toBe(true);
     expect(status.kitchen_open).toBe(true);
     expect(status.manager_open).toBe(true);
-    expect(status.cashier_open).toBe(false);
-    expect(status.student_orders_open).toBe(false);
+    expect(status.cashier_open).toBe(true);
+    expect(status.student_orders_open).toBe(true);
   });
 
   it("treats an expired temporary opening as closed", async () => {
@@ -283,6 +283,24 @@ describe("orders are kept in Supabase", () => {
     expect((await place()).status).toBe(201);
     expect(orderDb.rows.get(id)).toMatchObject({ status: "SUBMITTED", total_paisa: 15000 });
     expect([...mockStore.values.keys()].some((key) => key.startsWith("queue/") || key.startsWith("customers/"))).toBe(false);
+  });
+
+  it("holds quick orders for manager acceptance, then marks them ready", async () => {
+    const quick = { action: "create-order", order: { id, pickup_code: "CB555555", mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } };
+    expect((await post(quick)).status).toBe(201);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "SUBMITTED", payment_status: "UNPAID" });
+    const accepted = await post({ action: "set-status", order_id: id, status: "READY" }, MANAGER);
+    expect(accepted.status).toBe(200);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "READY", ready_at: expect.any(String) });
+  });
+
+  it("records cash as received when an order is marked collected", async () => {
+    await place();
+    await setStatus("PREPARING");
+    await setStatus("READY");
+    const response = await setStatus("COLLECTED");
+    expect(response.status).toBe(200);
+    expect(orderDb.rows.get(id)).toMatchObject({ status: "COLLECTED", payment_status: "PAID", cash_received_at: expect.any(String) });
   });
 
   it("moves an order through the canteen and into history", async () => {

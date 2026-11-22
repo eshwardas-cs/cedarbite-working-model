@@ -15,6 +15,17 @@ describe("student order submission recovery", () => {
     expect(verify).toHaveBeenCalledWith(order);
   });
 
+  it("checks the saved order after a server error that may follow a database commit", async () => {
+    const saved = { ...order, status: "READY", payment_method: "wallet", payment_status: "PAID" };
+    const serverError = Object.assign(new Error("Temporary server failure"), { status: 502 });
+    const submit = vi.fn().mockRejectedValue(serverError);
+    const verify = vi.fn().mockResolvedValue({ order: saved });
+
+    await expect(submitOrderWithRecovery(order, submit, verify, noWait)).resolves.toEqual(saved);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(verify).toHaveBeenCalledWith(order);
+  });
+
   it("retries the exact same order when no saved order can be found", async () => {
     const submit = vi.fn().mockRejectedValue(new TypeError("Network request failed"));
     const verify = vi.fn().mockResolvedValue({ order: null });

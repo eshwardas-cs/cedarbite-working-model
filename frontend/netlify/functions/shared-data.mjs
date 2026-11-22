@@ -538,8 +538,14 @@ export default async (request) => {
       if (["queue", "cash-desk", "kitchen", "history", "wallet-history"].includes(url.searchParams.get("scope"))) {
         const scope = url.searchParams.get("scope");
         const station = scope === "cash-desk" || scope === "wallet-history" ? "cashier" : scope === "kitchen" ? "kitchen" : "order_manager";
-        if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
-        if (!await isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
+        if (scope === "history") {
+          const managerAllowed = await staffConfigured("order_manager") && await isStaff(request, "order_manager");
+          const cashierAllowed = await staffConfigured("cashier") && await isStaff(request, "cashier");
+          if (!managerAllowed && !cashierAllowed) return reply({ error: "Sign in to the order manager or cash desk to view completed orders." }, 401);
+        } else {
+          if (!await staffConfigured(station)) return reply({ error: `The ${stationLabel[station]} login is not configured yet.` }, 503);
+          if (!await isStaff(request, station)) return reply({ error: `Sign in to the ${stationLabel[station]} station to view this information.` }, 401);
+        }
         if (scope === "wallet-history") {
           await importAllLegacyWalletData();
           return reply({ entries: await walletStore.listWalletEntries(200) });
@@ -663,13 +669,12 @@ export default async (request) => {
       if (!["cash", "wallet"].includes(paymentMethod)) return reply({ error: "Choose cash at pickup or CedarBite wallet. Other payment methods are not connected." }, 409);
       const saved = {
         id: order.id,
-        status: order.mode === "QUICK" ? "READY" : "SUBMITTED",
+        status: "SUBMITTED",
         mode: order.mode === "SCHEDULED" ? "SCHEDULED" : "QUICK",
         total_paisa: pricedOrder.total_paisa,
         total_display: pricedOrder.total_display,
         pickup_code: order.pickup_code,
         created_at: new Date().toISOString(),
-        ...(order.mode === "QUICK" ? { ready_at: new Date().toISOString() } : {}),
         pickup_window: order.pickup_window && typeof order.pickup_window === "object" ? order.pickup_window : null,
         items: pricedOrder.items,
         waiting_minutes: 0,
@@ -694,7 +699,10 @@ export default async (request) => {
       const persisted = created.order;
       // Quick orders are ready for collection immediately. Scheduled orders are emailed
       // once, with their receipt, when staff marks them ready.
-      if (persisted.status === "READY") await notifications.sendReadyPush(persisted);
+      if (persisted.status === "READY") {
+        try { await notifications.sendReadyPush(persisted); }
+        catch (error) { console.warn("The order was saved, but its ready alert could not be sent.", error); }
+      }
       return reply({ order: forStudent(persisted, customer.role === "student", true) }, 201);
     }
 
@@ -733,9 +741,9 @@ export default async (request) => {
       const customerType = order.customer_type ?? "STUDENT";
       const studentId = order.student_id == null ? null : String(order.student_id);
       const customerName = typeof order.customer_name === "string" ? order.customer_name.trim() : "";
-      if (customerType !== "STUDENT" && customerType !== "TEACHER") return reply({ error: "Choose whether the order is for a student or teacher." }, 400);
+      if (!new Set(["STUDENT", "TEACHER", "GUEST"]).has(customerType)) return reply({ error: "Choose whether the order is for a student, teacher, or guest." }, 400);
       if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId ?? "")) return reply({ error: "Student ID must contain seven digits." }, 400);
-      if (customerType === "TEACHER" && (!customerName || customerName.length > 100)) return reply({ error: "Enter the teacher’s name (up to 100 characters)." }, 400);
+      if ((customerType === "TEACHER" || customerType === "GUEST") && (!customerName || customerName.length > 100)) return reply({ error: `Enter the ${customerType === "GUEST" ? "guest’s" : "teacher’s"} name (up to 100 characters).` }, 400);
       let studentProfile = customerType === "STUDENT"
         ? await customerAuth.studentProfileFromId(studentId, { allowCounterName: true, allowMissingName: true })
         : null;
@@ -759,7 +767,7 @@ export default async (request) => {
       if (customerType === "STUDENT" && !studentProfile?.full_name) {
         studentProfile = await customerAuth.saveCounterStudentName(studentId, customerName, request.headers.get("x-canteen-username") || "counter");
       }
-      const saved = { id: order.id, status: order.mode === "QUICK" ? "READY" : "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), ...(order.mode === "QUICK" ? { ready_at: new Date().toISOString() } : {}), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "TEACHER" ? customerName : studentProfile?.full_name ?? null, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
+      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "STUDENT" ? studentProfile?.full_name ?? customerName : customerName, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
       const created = await orderDb.createOrderAtomic(saved, request.headers.get("x-canteen-username") || "counter");
       return reply({ order: created.order, duplicate: created.duplicate }, created.duplicate ? 200 : 201);
     }
@@ -949,8 +957,9 @@ export default async (request) => {
     }
 
     if (body.action === "refund-order") {
-      if (!await staffConfigured("order_manager")) return reply({ error: "The order control login is not configured yet." }, 503);
-      if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to refund an order." }, 401);
+      const managerCanRefund = await staffConfigured("order_manager") && await isStaff(request, "order_manager");
+      const cashierCanRefund = await staffConfigured("cashier") && await isStaff(request, "cashier");
+      if (!managerCanRefund && !cashierCanRefund) return reply({ error: "Sign in to the order manager or cash desk to record a refund." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
       const order = await orderDb.getOrder(body.order_id);
       if (!order || order.status !== "COLLECTED") return reply({ error: "This completed order is no longer in order history." }, 404);
@@ -977,9 +986,11 @@ export default async (request) => {
       if (order.status === body.status) return reply({ order, duplicate: true });
       if (order.status === "COLLECTED") return reply({ error: "Order not found." }, 404);
       if (order.status === "CANCELLED") return reply({ error: "This order was cancelled by the customer." }, 409);
-      if (transitions[order.status] !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
+      const validNextStatus = order.status === "SUBMITTED" && order.mode === "QUICK" ? "READY" : transitions[order.status];
+      if (validNextStatus !== body.status) return reply({ error: "That order status change is not allowed." }, 409);
+      const changedAt = new Date().toISOString();
       const updated = body.status === "COLLECTED"
-        ? { ...order, status: body.status, completed_at: new Date().toISOString() }
+        ? { ...order, status: body.status, completed_at: changedAt, ...(String(order.payment_method ?? "").toLowerCase() === "cash" ? { payment_status: "PAID", cash_received_at: changedAt } : {}) }
         : { ...order, status: body.status, ...(body.status === "READY" ? { ready_at: new Date().toISOString() } : {}) };
       // Only saves if no other screen moved this order on in the meantime.
       const saved = await orderDb.updateOrder(updated, { expectedStatus: order.status });

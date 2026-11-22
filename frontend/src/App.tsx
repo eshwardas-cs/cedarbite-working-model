@@ -1,6 +1,7 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { availablePickupWindows as filterPickupWindows, formatPickupTime, samplePickupWindows, type PickupWindow } from "./pickupWindows";
-import { submitOrderWithRecovery } from "./orderSubmission";
+import { OrderSubmissionUncertainError, submitOrderWithRecovery } from "./orderSubmission";
 import { fetchMenuFromSupabase } from "./menuApi";
 import { signInWithGoogle, signOutOfSupabase, takeSignInErrorFromUrl, userFromSession } from "./authApi";
 import { supabase, supabaseConfigured } from "./supabaseClient";
@@ -10,7 +11,7 @@ type MenuOption = { id: string; name: string; available: boolean };
 type Item = { id: number; category_id: number; name: string; description: string; price_paisa: number; price_display: string; available: boolean; quick_allowed: boolean; scheduled_allowed: boolean; prep_minutes: number | null; image_data?: string | null; addon_name?: string | null; addon_price_paisa?: number; options?: MenuOption[] };
 type Category = { id: number; name: string; items: Item[] };
 type MenuItemEditValues = Pick<Item, "category_id" | "name" | "description" | "price_paisa" | "quick_allowed" | "scheduled_allowed" | "prep_minutes" | "image_data" | "addon_name" | "addon_price_paisa" | "options">;
-type Order = { id: string | number; status: string; mode: string; total_display?: string; deal_discount_paisa?: number; pickup_code: string; created_at: string; ready_at?: string; completed_at?: string; cancelled_at?: string; voided_at?: string; voided_by?: string; void_reason?: string; refunded_at?: string; refund_method?: string; refund_status?: string; pickup_window?: { start_at: string; end_at: string } | null; items: { item_id?: number; option_id?: string; name: string; quantity: number; unit_price_paisa?: number }[]; waiting_minutes?: number; student_id?: string | null; customer_type?: "STUDENT" | "TEACHER"; customer_name?: string | null; payment_method?: string; payment_status?: string; deal_ids?: string[] };
+type Order = { id: string | number; status: string; mode: string; source?: string; total_paisa?: number; total_display?: string; deal_discount_paisa?: number; pickup_code: string; created_at: string; ready_at?: string; completed_at?: string; cancelled_at?: string; voided_at?: string; voided_by?: string; void_reason?: string; refunded_at?: string; refund_method?: string; refund_status?: string; pickup_window?: { start_at: string; end_at: string } | null; items: { item_id?: number; option_id?: string; name: string; quantity: number; unit_price_paisa?: number }[]; waiting_minutes?: number; student_id?: string | null; customer_type?: "STUDENT" | "TEACHER" | "GUEST"; customer_name?: string | null; payment_method?: string; payment_status?: string; deal_ids?: string[] };
 type StudentLookup = { student_id: string; full_name: string | null; source: "profile" | "counter" | "missing"; profile_exists: boolean };
 type HeroSlide = { id: string; kicker: string; title: string; highlight: string; description: string; image_data: string; active: boolean };
 const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
@@ -24,6 +25,9 @@ type OrderMode = "quick" | "scheduled";
 type WalletEntry = { id: string | number; label: string; amount: number; kind: "credit" | "debit"; created_at: string; method: string };
 type WalletTopUpHistoryEntry = { id: string; student_id: string; amount_paisa: number; kind?: "credit" | "debit"; label: string; created_at: string; recorded_by?: string; method?: string; status?: string };
 type DeveloperExportPayload = { period: { from: string; to: string; timezone: string; generated_at: string }; orders: Record<string, unknown>[]; sales_by_day: SalesSummary[]; sales_by_month: MonthlySalesSummary[]; wallet_entries: Record<string, unknown>[]; menu_items: Record<string, unknown>[] };
+class ApiResponseError extends Error {
+  constructor(message: string, readonly status: number, readonly localServiceUnavailable = false) { super(message); this.name = "ApiResponseError"; }
+}
 
 const DEFAULT_COLD_DRINK_OPTIONS: MenuOption[] = [
   { id: "drink-pepsi", name: "Pepsi", available: true },
@@ -140,6 +144,24 @@ function storageRemove(area: BrowserStorage, key: string): void {
   try { (area === "local" ? window.localStorage : window.sessionStorage).removeItem(key); }
   catch { /* Storage can be disabled by browser privacy settings. */ }
 }
+type PendingOrderAttempt = { order: Order; signature: string };
+const pendingOrderStorageKey = (email: string) => `cedarbite-pending-order:${email.trim().toLowerCase()}`;
+function orderAttemptSignature(order: Order) {
+  return JSON.stringify({
+    mode: order.mode,
+    payment_method: order.payment_method,
+    pickup_start_at: order.pickup_window?.start_at ?? null,
+    total_display: order.total_display ?? "",
+    items: order.items.map((item) => ({ item_id: item.item_id ?? null, option_id: item.option_id ?? null, name: item.name, quantity: item.quantity, unit_price_paisa: item.unit_price_paisa ?? null })),
+  });
+}
+function readPendingOrderAttempt(email: string): PendingOrderAttempt | null {
+  try {
+    const parsed = JSON.parse(storageGet("local", pendingOrderStorageKey(email)) || "null") as Partial<PendingOrderAttempt> | null;
+    if (!parsed?.order || typeof parsed.signature !== "string" || typeof parsed.order.id !== "string" || typeof parsed.order.pickup_code !== "string" || !Array.isArray(parsed.order.items)) return null;
+    return { order: parsed.order as Order, signature: parsed.signature };
+  } catch { storageRemove("local", pendingOrderStorageKey(email)); return null; }
+}
 type SavedBucket = { items: Record<string, number> };
 const GUEST_BUCKET_KEY = "cedarbite-bucket:guest";
 const accountBucketKey = (email: string) => `cedarbite-bucket:${email.trim().toLowerCase()}`;
@@ -178,7 +200,7 @@ const salesDateLabel = (date: string) => isValidSalesDate(date)
   ? new Intl.DateTimeFormat("en-PK", { timeZone: "Asia/Karachi", weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(new Date(`${date}T12:00:00.000Z`))
   : "Choose a summary date";
 const human = (value: string) => value.toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (x) => x.toUpperCase());
-const orderCustomerLabel = (order: Order) => order.customer_type === "TEACHER" ? `Teacher: ${order.customer_name || "Name not provided"}` : `${order.customer_name ? `${order.customer_name} · ` : ""}Student ID: ${order.student_id || "Not available"}`;
+const orderCustomerLabel = (order: Order) => order.customer_type === "TEACHER" ? order.customer_name || "Name not provided" : order.customer_type === "GUEST" ? `Guest: ${order.customer_name || "Name not provided"}` : `${order.customer_name ? `${order.customer_name} · ` : ""}Student ID: ${order.student_id || "Not available"}`;
 function useAutoPrintReceipt(request: { order: Order; key: string } | null) {
   useEffect(() => {
     if (!request) return;
@@ -188,7 +210,8 @@ function useAutoPrintReceipt(request: { order: Order; key: string } | null) {
 }
 function ReceiptPrintView({ order }: { order: Order }) {
   const pickupWindow = order.pickup_window ? `${new Date(order.pickup_window.start_at).toLocaleTimeString("en-PK", { timeZone: "Asia/Karachi", hour: "numeric", minute: "2-digit" })}–${new Date(order.pickup_window.end_at).toLocaleTimeString("en-PK", { timeZone: "Asia/Karachi", hour: "numeric", minute: "2-digit" })}` : "Quick pickup";
-  return <div className="receipt-print-root"><article className="receipt-print"><header><div className="receipt-brand"><ReceiptLogoMark/><b>CedarBite</b></div><span>CEDAR COLLEGE CANTEEN</span></header><div className="receipt-divider"/><h1>ORDER RECEIPT</h1><div className="receipt-pickup"><small>PICKUP NUMBER</small><strong>{order.pickup_code}</strong></div><div className="receipt-meta"><span>Customer</span><b>{orderCustomerLabel(order)}</b><span>Order type</span><b>{order.mode === "SCHEDULED" ? `Scheduled · ${pickupWindow}` : pickupWindow}</b><span>Placed</span><b>{new Date(order.created_at).toLocaleString("en-PK", { timeZone: "Asia/Karachi" })}</b><span>Payment</span><b>{human(order.payment_method ?? "cash")} · {human(order.payment_status ?? "unpaid")}</b></div><div className="receipt-divider"/><div className="receipt-lines">{order.items.map((item, index) => <div key={`${item.name}-${index}`}><span>{item.quantity} × {item.name}</span>{item.unit_price_paisa != null && <b>{money(item.unit_price_paisa * item.quantity)}</b>}</div>)}</div>{(order.deal_discount_paisa ?? 0) > 0 && <div className="receipt-deal-savings"><span>Deal savings</span><b>−{money(order.deal_discount_paisa ?? 0)}</b></div>}<div className="receipt-divider"/><div className="receipt-total"><span>TOTAL</span><strong>{order.total_display || "—"}</strong></div><footer>Keep this receipt and show the pickup number when collecting your order.<br/>Thank you for choosing CedarBite.</footer></article></div>;
+  const placedAt = Number.isFinite(Date.parse(order.created_at)) ? new Date(order.created_at) : new Date();
+  return createPortal(<div className="receipt-print-root"><article className="receipt-print"><header><div className="receipt-brand"><ReceiptLogoMark/><b>CedarBite</b></div><span>CEDAR COLLEGE CANTEEN</span></header><div className="receipt-divider"/><h1>ORDER RECEIPT</h1><div className="receipt-pickup"><small>PICKUP NUMBER</small><strong>{order.pickup_code}</strong></div><div className="receipt-meta"><span>Customer</span><b>{orderCustomerLabel(order)}</b><span>Order type</span><b>{order.mode === "SCHEDULED" ? `Scheduled · ${pickupWindow}` : pickupWindow}</b><span>Placed</span><b>{placedAt.toLocaleString("en-PK", { timeZone: "Asia/Karachi", dateStyle: "medium", timeStyle: "short" })}</b><span>Payment</span><b>{human(order.payment_method ?? "cash")} · {human(order.payment_status ?? "unpaid")}</b></div><div className="receipt-divider"/><div className="receipt-lines">{order.items.map((item, index) => <div key={`${item.name}-${index}`}><span>{item.quantity} × {item.name}</span>{item.unit_price_paisa != null && <b>{money(item.unit_price_paisa * item.quantity)}</b>}</div>)}</div>{(order.deal_discount_paisa ?? 0) > 0 && <div className="receipt-deal-savings"><span>Deal savings</span><b>−{money(order.deal_discount_paisa ?? 0)}</b></div>}<div className="receipt-divider"/><div className="receipt-total"><span>TOTAL</span><strong>{order.total_display || "—"}</strong></div><footer>Keep this receipt and show the pickup number when collecting your order.<br/>Thank you for choosing CedarBite.</footer></article></div>, document.body);
 }
 const stationName = (station: string | null, user?: User | null) => station === "order_taker" ? "the counter station" : station === "cashier" ? "the cash desk" : station === "kitchen" ? "the kitchen monitor" : station === "order_manager" ? "the order manager station" : user?.email ? `the student account ${user.email}` : "another account";
 const sampleMenu: Category[] = [
@@ -221,8 +244,18 @@ const CANTEEN_SESSION_KEY = "cedarbite-canteen-session";
 const CANTEEN_USERNAME_KEY = "cedarbite-canteen-username";
 const CANTEEN_ROLE_KEY = "cedarbite-canteen-role";
 const SHARED_DATA_URL = "/.netlify/functions/shared-data";
+const LOCAL_ORDER_QUEUE_KEY = "cedarbite-local-order-queue";
 const walletKey = (email: string) => `cedarbite-demo-wallet:${email}`;
 const demoOrdersKey = (email: string) => `cedarbite-demo-orders:${email.trim().toLowerCase()}`;
+function readLocalOrderQueue(): Order[] {
+  try {
+    const parsed = JSON.parse(storageGet("local", LOCAL_ORDER_QUEUE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed as Order[] : [];
+  } catch { storageRemove("local", LOCAL_ORDER_QUEUE_KEY); return []; }
+}
+function writeLocalOrderQueue(orders: Order[]) {
+  return storageSet("local", LOCAL_ORDER_QUEUE_KEY, JSON.stringify(orders));
+}
 function loadDemoOrders(email: string, studentId: string | null): Order[] {
   const key = demoOrdersKey(email);
   try {
@@ -446,7 +479,7 @@ export default function App() {
       const saved = storageGet("local", "cedarbite-homepage-hero-slides");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return replaceLegacyHeroPhotos(parsed);
+        if (Array.isArray(parsed) && parsed.length && parsed.some((slide) => slide?.active !== false)) return replaceLegacyHeroPhotos(parsed);
       }
     } catch { storageRemove("local", "cedarbite-homepage-hero-slides"); }
     return defaultHeroSlides;
@@ -461,6 +494,7 @@ export default function App() {
   const bucketHydratedRef = useRef(false);
   const skipBucketPersistRef = useRef(false);
   const cashTopUpRequest = useRef<{ signature: string; key: string } | null>(null);
+  const pendingOrderAttemptRef = useRef<{ email: string; attempt: PendingOrderAttempt } | null>(null);
   const [itemMessage, setItemMessage] = useState("");
   const availablePickupWindows = useMemo(
     () => filterPickupWindows(pickupWindows, new Date(scheduleClock)),
@@ -479,15 +513,25 @@ export default function App() {
     const response = await fetch(path, { ...init, headers, credentials: "include" });
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.toLowerCase().includes("application/json")) {
-      throw new Error(`Expected JSON from ${path}, received ${contentType || "an unknown response"}.`);
+      throw new ApiResponseError(`Expected JSON from ${path}, received ${contentType || "an unknown response"}.`, response.status);
     }
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : typeof body.error === "string" ? body.error : `Request failed (${response.status})`);
+    if (!response.ok) {
+      const serverMessage = typeof body.detail === "string" ? body.detail : typeof body.error === "string" ? body.error : `Request failed (${response.status})`;
+      const localServiceUnavailable = !IS_NETLIFY_HOSTED && /SUPABASE_SECRET_KEY/i.test(serverMessage);
+      throw new ApiResponseError(localServiceUnavailable ? "Records are not connected in this local environment." : serverMessage, response.status, localServiceUnavailable);
+    }
     return body as T;
   }, [canteenPassword, canteenStation, canteenUsername, csrf]);
 
   async function submitCounterOrder(order: Record<string, unknown>): Promise<Order> {
-    if (!isCanteenOpenNow() && !temporaryOpening) throw new Error("We are currently not accepting orders.");
+    if (!isCanteenOpenNow() && !temporaryOpening && (IS_NETLIFY_HOSTED || user?.role !== "DEMO_CANTEEN")) throw new Error("We are currently not accepting orders.");
+    if (!IS_NETLIFY_HOSTED && user?.role === "DEMO_CANTEEN") {
+      const createdAt = typeof order.created_at === "string" && Number.isFinite(Date.parse(order.created_at)) ? order.created_at : new Date().toISOString();
+      const localOrder = { ...order, created_at: createdAt, source: "COUNTER", status: "SUBMITTED", payment_method: "cash", payment_status: "UNPAID" } as unknown as Order;
+      writeLocalOrderQueue([localOrder, ...readLocalOrderQueue().filter((entry) => String(entry.id) !== String(localOrder.id))]);
+      return localOrder;
+    }
     const init: RequestInit = { method: "POST", body: JSON.stringify({ action: "create-counter-order", order }) };
     const orderId = String(order.id ?? "");
     let connectionError: TypeError | null = null;
@@ -518,6 +562,20 @@ export default function App() {
   }
 
   async function submitStudentOrder(order: Order): Promise<Order> {
+    if (!IS_NETLIFY_HOSTED && user?.role === "DEMO_STUDENT") {
+      const localOrder: Order = {
+        ...order,
+        total_paisa: order.total_paisa ?? cartTotal,
+        customer_type: "STUDENT",
+        customer_name: user.full_name ?? null,
+        source: "LOCAL",
+        status: "SUBMITTED",
+        payment_status: order.payment_method === "wallet" ? "PAID" : "UNPAID",
+      };
+      const queue = readLocalOrderQueue();
+      if (!queue.some((entry) => String(entry.id) === String(localOrder.id))) writeLocalOrderQueue([localOrder, ...queue]);
+      return localOrder;
+    }
     return submitOrderWithRecovery(order, async (sameOrder) => {
       // The server works out who is ordering from this sign-in token, not from the order details.
       const { data } = await supabase.auth.getSession();
@@ -660,6 +718,16 @@ export default function App() {
     queueLoadInFlightRef.current = true;
     const revision = queueRevisionRef.current;
     try {
+      if (!IS_NETLIFY_HOSTED && user?.role === "DEMO_CANTEEN") {
+        const activeLocalOrders = readLocalOrderQueue().filter((order) => !["COLLECTED", "CANCELLED", "VOIDED"].includes(order.status));
+        const localQueue = canteenStation === "cashier"
+          ? activeLocalOrders.filter((order) => order.payment_method === "cash" && order.payment_status !== "PAID" && order.status !== "COLLECTED")
+          : canteenStation === "kitchen"
+            ? activeLocalOrders.filter((order) => order.status === "PREPARING")
+            : activeLocalOrders;
+        if (revision === queueRevisionRef.current) setQueue(localQueue);
+        return;
+      }
       const scope = canteenStation === "cashier" ? "cash-desk" : canteenStation === "kitchen" ? "kitchen" : "queue";
       const path = user?.role === "DEMO_CANTEEN" ? `${SHARED_DATA_URL}?scope=${scope}` : "/api/queue";
       const result = await request<{ orders: Order[] }>(path, { cache: "no-store" });
@@ -674,8 +742,13 @@ export default function App() {
     }
   }, [canteenStation, page, request, user]);
   const loadOrderHistory = useCallback(async () => {
-    if (user?.role !== "DEMO_CANTEEN" || !canViewSales) return;
+    if (user?.role !== "DEMO_CANTEEN" || (!canViewSales && canteenStation !== "cashier")) return;
     try {
+      if (!IS_NETLIFY_HOSTED) {
+        const completed = readLocalOrderQueue().filter((order) => order.status === "COLLECTED");
+        setOrderHistory(completed.sort((a, b) => Date.parse(b.completed_at ?? b.created_at) - Date.parse(a.completed_at ?? a.created_at)));
+        return;
+      }
       const result = await request<{ orders: Order[] }>(`${SHARED_DATA_URL}?scope=history`, { cache: "no-store" });
       setOrderHistory(result.orders);
     } catch (error) {
@@ -983,8 +1056,9 @@ export default function App() {
   useEffect(() => {
     if (temporaryOpening) { setOrderingReason("Open temporarily · all interfaces active"); return; }
     if (orderingManagerPaused) return;
+    if (!IS_NETLIFY_HOSTED && user?.role === "DEMO_STUDENT") { setOrderingReason("Local order preview"); return; }
     setOrderingReason(isCanteenOpenNow(new Date(businessClock)) ? "Ordering is open" : "Closed · opens at 8:00 AM");
-  }, [businessClock, orderingManagerPaused, temporaryOpening]);
+  }, [businessClock, orderingManagerPaused, temporaryOpening, user?.role]);
 
   useEffect(() => {
     if (page !== "menu") return;
@@ -1088,7 +1162,7 @@ export default function App() {
       try {
         const result = await request<{ slides: HeroSlide[] | null }>(`${SHARED_DATA_URL}?scope=hero-slides`);
         if (!stopped) {
-          const updated = Array.isArray(result.slides) && result.slides.length ? replaceLegacyHeroPhotos(result.slides) : defaultHeroSlides;
+          const updated = Array.isArray(result.slides) && result.slides.length && result.slides.some((slide) => slide?.active !== false) ? replaceLegacyHeroPhotos(result.slides) : defaultHeroSlides;
           setHeroSlides((current) => current.length === updated.length && current.every((slide, index) => {
             const next = updated[index];
             return slide.id === next.id && slide.kicker === next.kicker && slide.title === next.title && slide.highlight === next.highlight && slide.description === next.description && slide.image_data === next.image_data && slide.active === next.active;
@@ -1188,7 +1262,7 @@ export default function App() {
     return () => observer.disconnect();
   }, [availableModeCategories, menuReady, page]);
 
-  const quickOrdersOpen = (isCanteenOpenNow(new Date(businessClock)) || temporaryOpening) && !orderingManagerPaused;
+  const quickOrdersOpen = (isCanteenOpenNow(new Date(businessClock)) || temporaryOpening || (!IS_NETLIFY_HOSTED && user?.role === "DEMO_STUDENT")) && !orderingManagerPaused;
   const cartCount = Object.values(cart).reduce((sum, quantity) => sum + quantity, 0);
   const cartListTotal = Object.entries(cart).reduce((sum, [key, quantity]) => { const { itemId, withAddon } = readCartLineKey(key); const item = sellableItems.find((candidate) => candidate.id === itemId); return sum + (item ? item.price_paisa + (withAddon ? item.addon_price_paisa ?? 0 : 0) : 0) * quantity; }, 0);
   const cartTotal = cartListTotal;
@@ -1288,6 +1362,15 @@ export default function App() {
     queueRevisionRef.current += 1;
     setQueuePendingIds((current) => [...new Set([...current, orderId])]);
     try {
+      if (!IS_NETLIFY_HOSTED && user?.role === "DEMO_CANTEEN") {
+        const receivedAt = new Date().toISOString();
+        const updated = { ...order, payment_status: "PAID", cash_received_at: receivedAt };
+        writeLocalOrderQueue(readLocalOrderQueue().map((entry) => String(entry.id) === orderId ? updated : entry));
+        queueRevisionRef.current += 1;
+        setQueue((current) => current.filter((entry) => String(entry.id) !== orderId));
+        setToast(`Cash received for order ${order.pickup_code}.`);
+        return;
+      }
       const result = await request<{ order?: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "mark-cash-paid", order_id: orderId }) });
       if (!result.order || result.order.payment_status !== "PAID") throw new Error("The cash desk did not confirm this receipt.");
       queueRevisionRef.current += 1;
@@ -1447,7 +1530,8 @@ export default function App() {
     if (orderSubmittingRef.current) return;
     if (!user || !canOrder) { setToast("Sign in with a Cedar email to place an order."); return; }
     if (!cartCount) return;
-    if ((!isCanteenOpenNow() && !temporaryOpening) || orderingManagerPaused) { setShowOrderingPausedPopup(true); return; }
+    const localStudentPreview = !IS_NETLIFY_HOSTED && user?.role === "DEMO_STUDENT";
+    if (((!isCanteenOpenNow() && !temporaryOpening) && !localStudentPreview) || orderingManagerPaused) { setShowOrderingPausedPopup(true); return; }
     const selectedPickupWindow = orderMode === "scheduled"
       ? availablePickupWindows.find((window) => String(window.id) === selectedWindow)
       : null;
@@ -1474,31 +1558,55 @@ export default function App() {
       setOrderError("Your bucket had an item that is no longer on the current menu. It has been removed; please review the items and try again.");
       return;
     }
-    if (paymentMethod === "wallet" && walletBalance < cartTotal) { setToast("Your wallet balance is too low. Add wallet balance to continue."); setWalletOpen(true); return; }
+    const pendingEmail = user.email.trim().toLowerCase();
+    const pendingKey = pendingOrderStorageKey(pendingEmail);
+    const pendingAttempt = pendingOrderAttemptRef.current?.email === pendingEmail
+      ? pendingOrderAttemptRef.current.attempt
+      : readPendingOrderAttempt(pendingEmail);
+    if (paymentMethod === "wallet" && !pendingAttempt && walletBalance < cartTotal) { setToast("Your wallet balance is too low. Add wallet balance to continue."); setWalletOpen(true); return; }
+    let pickupCode = "";
+    do { pickupCode = `CB${crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`; } while (orders.some((existing) => existing.pickup_code === pickupCode));
+    const draftOrder: Order = { id: crypto.randomUUID(), status: "SUBMITTED", mode: orderMode === "quick" ? "QUICK" : "SCHEDULED", student_id: user.student_id, payment_method: paymentMethod, total_paisa: cartTotal, total_display: money(cartTotal), pickup_code: pickupCode, created_at: new Date().toISOString(), pickup_window: selectedPickupWindow ? { start_at: selectedPickupWindow.start_at, end_at: selectedPickupWindow.end_at } : null, items: orderItems, waiting_minutes: 0 };
+    const draftSignature = orderAttemptSignature(draftOrder);
+    if (pendingAttempt && pendingAttempt.signature !== draftSignature) {
+      setOrderError("A previous order attempt is still being checked. Review My Orders before placing a different order.");
+      return;
+    }
+    const attempt = pendingAttempt ?? { order: draftOrder, signature: draftSignature };
     askForReadyAlertsOnOrder();
     orderSubmittingRef.current = true;
     setOrderSubmitting(true);
     setOrderError("");
     setToast("");
-    const entry = paymentMethod === "wallet" ? { id: crypto.randomUUID(), label: "Order payment", amount: cartTotal, kind: "debit" as const, created_at: new Date().toISOString(), method: "CedarBite wallet" } : null;
-    let pickupCode = "";
-    do { pickupCode = `CB${crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`; } while (orders.some((existing) => existing.pickup_code === pickupCode));
-    const order: Order = { id: crypto.randomUUID(), status: "SUBMITTED", mode: orderMode === "quick" ? "QUICK" : "SCHEDULED", student_id: user.student_id, payment_method: paymentMethod, total_display: money(cartTotal), pickup_code: pickupCode, created_at: new Date().toISOString(), pickup_window: selectedPickupWindow ? { start_at: selectedPickupWindow.start_at, end_at: selectedPickupWindow.end_at } : null, items: orderItems, waiting_minutes: 0 };
+    if (!pendingAttempt) storageSet("local", pendingKey, JSON.stringify(attempt));
+    pendingOrderAttemptRef.current = { email: pendingEmail, attempt };
     try {
-      const confirmedOrder = await submitStudentOrder(order);
+      const confirmedOrder = await submitStudentOrder(attempt.order);
       if (!confirmedOrder?.pickup_code) throw new Error("The canteen did not confirm this order. Your bucket is still here; check My Orders before trying again.");
-      if (entry && user.role === "DEMO_STUDENT") saveWallet(walletBalance - cartTotal, [entry, ...walletEntries]);
-      else if (entry) await loadWallet();
+      storageRemove("local", pendingKey);
+      pendingOrderAttemptRef.current = null;
+      if (confirmedOrder.payment_method === "wallet" && user.role === "DEMO_STUDENT") {
+        const paidAmount = confirmedOrder.total_paisa ?? cartTotal;
+        const entry = { id: crypto.randomUUID(), label: "Order payment", amount: paidAmount, kind: "debit" as const, created_at: new Date().toISOString(), method: "CedarBite wallet" };
+        saveWallet(walletBalance - paidAmount, [entry, ...walletEntries]);
+      }
       const nextOrders = [confirmedOrder, ...orders.filter((existing) => existing.id !== confirmedOrder.id)];
       storageSet("local", demoOrdersKey(user.email), JSON.stringify(nextOrders));
       setOrders(nextOrders);
       setQueue((current) => [confirmedOrder, ...current.filter((existing) => existing.id !== confirmedOrder.id)]);
       setOrderConfirmation(confirmedOrder);
-      setCart({});
+      if (attempt.signature === draftSignature) setCart({});
       setCartOpen(false);
       setShowOrderConfirmation(true);
+      if (confirmedOrder.payment_method === "wallet" && user.role !== "DEMO_STUDENT") void loadWallet();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not send this order to the canteen. Your bucket is unchanged.";
+      const status = error instanceof Error ? Number((error as Error & { status?: unknown }).status) : 0;
+      const uncertain = error instanceof OrderSubmissionUncertainError || error instanceof TypeError || status === 401 || status === 403 || status >= 500;
+      if (!uncertain) {
+        storageRemove("local", pendingKey);
+        if (pendingOrderAttemptRef.current?.email === pendingEmail) pendingOrderAttemptRef.current = null;
+      }
       if (message === "We are currently not accepting orders." || message === "Online ordering is paused by the canteen.") {
         setShowOrderingPausedPopup(true);
         setOrderError("");
@@ -1742,7 +1850,8 @@ export default function App() {
   }
   async function advanceOrder(order: Order) {
     const next: Record<string, string> = { SUBMITTED: "PREPARING", ACCEPTED: "READY", PREPARING: "READY", READY: "COLLECTED" };
-    if (!next[order.status]) return;
+    const nextStatus = order.status === "SUBMITTED" && order.mode === "QUICK" ? "READY" : next[order.status];
+    if (!nextStatus) return;
     const orderId = String(order.id);
     if (queueMutationPendingRef.current.has(orderId)) return;
     queueMutationPendingRef.current.add(orderId);
@@ -1750,17 +1859,30 @@ export default function App() {
     setQueuePendingIds((current) => [...new Set([...current, orderId])]);
     try {
       if (user?.role === "DEMO_CANTEEN") {
-        const result = await request<{ order: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "set-status", order_id: orderId, status: next[order.status] }) });
-        if (!result.order || result.order.status !== next[order.status]) throw new Error("The canteen did not confirm this order update.");
+        if (!IS_NETLIFY_HOSTED) {
+          const localOrders = readLocalOrderQueue();
+          const updated = localOrders.find((entry) => String(entry.id) === orderId);
+          if (!updated || updated.status !== order.status) throw new Error("This order changed. Refresh the queue and try again.");
+          const changedAt = new Date().toISOString();
+          const saved = { ...updated, status: nextStatus, ...(nextStatus === "READY" ? { ready_at: changedAt } : {}), ...(nextStatus === "COLLECTED" ? { completed_at: changedAt, ...(updated.payment_method === "cash" ? { payment_status: "PAID", cash_received_at: changedAt } : {}) } : {}) };
+          writeLocalOrderQueue(localOrders.map((entry) => String(entry.id) === orderId ? saved : entry));
+          queueRevisionRef.current += 1;
+          setQueue((current) => saved.status === "COLLECTED" ? current.filter((entry) => String(entry.id) !== orderId) : [saved, ...current.filter((entry) => String(entry.id) !== orderId)]);
+          if (saved.status === "COLLECTED") setOrderHistory((current) => [saved, ...current.filter((entry) => String(entry.id) !== orderId)].slice(0, 100));
+          setToast(`Order ${order.pickup_code} updated.`);
+          return;
+        }
+        const result = await request<{ order: Order }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "set-status", order_id: orderId, status: nextStatus }) });
+        if (!result.order || result.order.status !== nextStatus) throw new Error("The canteen did not confirm this order update.");
         queueRevisionRef.current += 1;
         setQueue((current) => result.order.status === "COLLECTED" ? current.filter((entry) => String(entry.id) !== orderId) : [result.order, ...current.filter((entry) => String(entry.id) !== orderId)]);
         if (result.order.status === "COLLECTED") setOrderHistory((current) => [result.order, ...current.filter((entry) => String(entry.id) !== orderId)].slice(0, 100));
         setToast(`Order ${order.pickup_code} updated.`);
         return;
       }
-      const result = await request<Order & { order?: Order }>(`/api/orders/${order.id}/status`, { method: "POST", body: JSON.stringify({ to: next[order.status] }) });
+      const result = await request<Order & { order?: Order }>(`/api/orders/${order.id}/status`, { method: "POST", body: JSON.stringify({ to: nextStatus }) });
       const savedOrder = result.order ?? (result.id != null ? result : undefined);
-      if (!savedOrder || savedOrder.status !== next[order.status]) throw new Error("The canteen did not confirm this order update.");
+      if (!savedOrder || savedOrder.status !== nextStatus) throw new Error("The canteen did not confirm this order update.");
       const updated = { ...order, ...savedOrder };
       queueRevisionRef.current += 1;
       setQueue((current) => updated.status === "COLLECTED" ? current.filter((entry) => String(entry.id) !== orderId) : [updated, ...current.filter((entry) => String(entry.id) !== orderId)]);
@@ -1772,7 +1894,7 @@ export default function App() {
       queueMutationPendingRef.current.delete(orderId);
       setQueuePendingIds((current) => current.filter((id) => id !== orderId));
       void loadQueue();
-      if (next[order.status] === "COLLECTED") void loadOrderHistory();
+      if (nextStatus === "COLLECTED") void loadOrderHistory();
     }
   }
   async function deleteOrder(order: Order) {
@@ -1840,7 +1962,7 @@ export default function App() {
     }
   }
   async function refundHistoryOrder(order: Order) {
-    if (user?.role !== "DEMO_CANTEEN" || canteenStation !== "order_manager" || order.refund_status === "REFUNDED") return;
+    if (user?.role !== "DEMO_CANTEEN" || !["order_manager", "cashier"].includes(canteenStation) || order.refund_status === "REFUNDED") return;
     const paymentMethod = String(order.payment_method || "cash").trim().toLowerCase();
     const isWallet = paymentMethod === "wallet";
     if (!isWallet && String(order.payment_status || "").trim().toUpperCase() !== "PAID") { setToast("This order has no recorded payment to refund. Record the cash receipt in Cash Desk first."); return; }
@@ -1853,6 +1975,19 @@ export default function App() {
     queueMutationPendingRef.current.add(orderId);
     setQueuePendingIds((current) => [...new Set([...current, orderId])]);
     try {
+      if (!IS_NETLIFY_HOSTED) {
+        const refundedAt = new Date().toISOString();
+        const updated = { ...order, refund_status: "REFUNDED", refund_method: isWallet ? "wallet" : "manual", refunded_at: refundedAt, refunded_by: canteenStation, refund_amount_paisa: order.total_paisa ?? 0 };
+        writeLocalOrderQueue(readLocalOrderQueue().map((entry) => String(entry.id) === orderId ? updated : entry));
+        setOrderHistory((current) => current.map((entry) => String(entry.id) === orderId ? updated : entry));
+        if (isWallet && user.email) {
+          const refundAmount = order.total_paisa ?? 0;
+          const entry = { id: crypto.randomUUID(), label: `Refund · ${order.pickup_code}`, amount: refundAmount, kind: "credit" as const, created_at: refundedAt, method: "CedarBite wallet refund" };
+          saveWallet(walletBalance + refundAmount, [entry, ...walletEntries]);
+        }
+        setToast(isWallet ? `Refund recorded for ${order.pickup_code}.` : `Manual refund recorded for ${order.pickup_code}.`);
+        return;
+      }
       const result = await request<{ order: Order; duplicate?: boolean }>(SHARED_DATA_URL, { method: "POST", body: JSON.stringify({ action: "refund-order", order_id: orderId }) });
       if (!result.order?.refund_status) throw new Error("The canteen did not confirm the refund record.");
       setOrderHistory((current) => current.map((entry) => String(entry.id) === orderId ? result.order : entry));
@@ -2227,14 +2362,15 @@ function OwnerApp(props: OwnerProps) {
   const [editingMenuItemId, setEditingMenuItemId] = useState<number | null>(null);
   const [receiptRequest, setReceiptRequest] = useState<{ order: Order; key: string } | null>(null);
   useAutoPrintReceipt(receiptRequest);
-  const { user, categories, items, queue, canManage, canToggle, canQueue } = props;
+  const { user, categories, items, queue, orderHistory, canManage, canToggle, canQueue } = props;
   const isDeveloper = props.station === "developer";
   const hasDeveloperAccess = isDeveloper && Boolean(user?.permissions.includes("developer.area"));
-  const canCustomize = canManage || (isDeveloper && Boolean(user?.permissions.includes("customize.manage")));
+  const canCustomize = canManage || (isDeveloper && Boolean(user?.permissions.includes("developer.area") || user?.permissions.includes("customize.manage")));
   const activeStation = storageGet("session", CANTEEN_ROLE_KEY);
   const stationConflict = Boolean((activeStation && activeStation !== props.station) || (user && (user.role !== "DEMO_CANTEEN" || activeStation !== props.station)));
   const waiting = queue.filter((order) => ["SUBMITTED", "ACCEPTED", "PREPARING"].includes(order.status)).length;
-  const tabs = props.station === "cashier" ? ["Cash receipts", "Wallet top-ups", "Wallet top-up history"] : isDeveloper ? ["Overview", "Daily sales", "Monthly sales", "Customize", "Staff passwords", "Export"] : ["Overview", "Daily sales", "Monthly sales", "Orders history", "Customize"];
+  const refundOrders = orderHistory.filter((order) => order.status === "COLLECTED");
+  const tabs = props.station === "cashier" ? ["Cash receipts", "Wallet top-ups", "Wallet top-up history", "Refunds"] : isDeveloper ? ["Overview", "Daily sales", "Monthly sales", "Customize", "Staff passwords", "Export"] : ["Overview", "Daily sales", "Monthly sales", "Orders history", "Customize"];
   async function lookupTopUpStudent(studentId: string) {
     const version = ++topUpStudentLookupVersion.current;
     setTopUpStudent(null);
@@ -2276,10 +2412,11 @@ function OwnerApp(props: OwnerProps) {
           if (name === "Customize") { setCustomizeOpen((open) => !open); setMobileNavOpen(false); return; }
           setCustomizeOpen(false); setTab(name); setMobileNavOpen(false);
           if (name === "Orders history") props.onLoadHistory();
+          if (name === "Refunds") props.onLoadHistory();
           if (name === "Daily sales") { const today = pakistanDay(); setSalesDate(today); props.onLoadSalesDates(); props.onLoadSalesSummary(today); }
           if (name === "Monthly sales") { const month = pakistanDay().slice(0, 7); setSalesMonth(month); props.onLoadMonthlySalesMonths(); props.onLoadMonthlySalesSummary(month); }
           if (name === "Wallet top-up history") props.onLoadWalletTopUpHistory();
-        }}><span>{({Overview:"⌂","Daily sales":"▥","Monthly sales":"▤","New orders":"▤",Preparing:"◷","Order Ready":"✓","Orders history":"▤",Customize:"⚙","Staff passwords":"⚿","Cash receipts":"¤","Wallet top-ups":"＋","Wallet top-up history":"≡"} as Record<string,string>)[name]}</span>{name}<i className="customize-chevron" aria-hidden="true">{name === "Customize" ? customizeOpen ? "⌃" : "⌄" : ""}</i>{name === "New orders" && queue.filter((order) => order.status === "SUBMITTED").length > 0 && <i>{queue.filter((order) => order.status === "SUBMITTED").length}</i>}</button>
+        }}><span>{({Overview:"⌂","Daily sales":"▥","Monthly sales":"▤","New orders":"▤",Preparing:"◷","Order Ready":"✓","Orders history":"▤",Customize:"⚙","Staff passwords":"⚿","Cash receipts":"¤","Wallet top-ups":"＋","Wallet top-up history":"≡",Refunds:"↺"} as Record<string,string>)[name]}</span>{name}<i className="customize-chevron" aria-hidden="true">{name === "Customize" ? customizeOpen ? "⌃" : "⌄" : ""}</i>{name === "New orders" && queue.filter((order) => order.status === "SUBMITTED").length > 0 && <i>{queue.filter((order) => order.status === "SUBMITTED").length}</i>}</button>
         {name === "Customize" && customizeOpen && <div className="customize-subnav" aria-label="Website customization">{(isDeveloper ? ["Homepage banner", "Item of the day"] : ["Menu"]).map((section) => <button type="button" key={section} className={tab === section ? "active" : ""} aria-current={tab === section ? "page" : undefined} onClick={() => { setTab(section); setMobileNavOpen(false); }}>{section}</button>)}</div>}
       </div>)}{!isDeveloper && <a className="owner-all-stations-link" href="/stations">← All staff stations</a>}<button className="back-store owner-mobile-back-store" onClick={props.onBack}>← Back to student menu</button></div><div className="sidebar-spacer"/><div className="service-state"><span className="state-dot"/> <span><b>Canteen service</b><small>{props.orderingReason}</small></span></div><button className="back-store" onClick={props.onBack}>← Back to student menu</button></aside>
     <div className="owner-main"><header className="owner-topbar"><div><span className="owner-crumb">CEDARBITE <span>/</span> {isDeveloper ? "DEVELOPER" : "CANTEEN"}</span><h1>{({Overview:isDeveloper ? "Website insights" : "Canteen overview","Daily sales":"Daily sales summary","Monthly sales":"Monthly sales audit","New orders":"New orders",Preparing:"Preparing","Order Ready":"Order Ready","Orders history":"Completed order history",Menu:"Menu management","Item of the day":"Item of the day","Customize":"Customize","Staff passwords":isDeveloper ? "Staff password control" : "Staff password reset",Export:"Export data","Cash receipts":"Cash receipts","Wallet top-ups":"Student wallet top-ups","Wallet top-up history":"Wallet top-up history"} as Record<string,string>)[tab] ?? "Canteen console"}</h1></div><div className="owner-top-actions">{!isDeveloper && <a className="owner-stations-button" href="/stations">Staff stations <span aria-hidden="true">↗</span></a>}<button className="refresh-link" onClick={() => { props.onRefresh(); if (tab === "Daily sales") { props.onLoadSalesDates(); if (isValidSalesDate(salesDate)) props.onLoadSalesSummary(salesDate); } if (tab === "Monthly sales") { props.onLoadMonthlySalesMonths(); props.onLoadMonthlySalesSummary(salesMonth); } if (isDeveloper && tab === "Overview") { props.onLoadSalesSummary(); props.onLoadMonthlySalesSummary(); } }}>↻ Refresh</button>{user ? <button className="owner-user" onClick={props.onSignOut}><span>{user.email.slice(0,1).toUpperCase()}</span>{user.email} · Sign out</button> : !isDeveloper && <button className="sign-button" onClick={props.onSignIn}>Sign in</button>}{user && storageGet("session", CANTEEN_ROLE_KEY) === props.station && <ChangePasswordForm station={props.station} onChange={props.onChangePassword}/>}<ThemeSwitch darkMode={props.darkMode} onToggle={props.onToggleTheme} className="owner-theme-toggle"/></div></header>
@@ -2290,6 +2427,7 @@ function OwnerApp(props: OwnerProps) {
       {tab === "Homepage banner" && isDeveloper && canCustomize && <HeroSlidesEditor slides={props.heroSlides} message={props.heroSlidesMessage} pending={props.heroSlidesPending} onSave={props.onSaveHeroSlides}/>}
       {tab === "Wallet top-ups" && props.canTopUp && <section className="owner-content"><div className="owner-columns"><section className="owner-panel form-panel"><span className="section-kicker">CASH RECEIVED AT COUNTER</span><h2>Credit a student wallet</h2><p className="sample-reminder">Accept the cash first, then enter the student ID and amount. {user?.role === "DEMO_CANTEEN" ? "Credits are saved to the shared wallet ledger with your staff account and time." : "Each credit is saved to the shared wallet ledger with your staff account and time."}</p><form className="owner-form" onSubmit={async (event) => { event.preventDefault(); const form = event.currentTarget; if (await props.onCashTopUp(form)) { topUpStudentLookupVersion.current += 1; setTopUpStudentId(""); setTopUpStudent(null); setTopUpStudentConfirmed(false); setTopUpStudentLookupError(""); } }}><label>7-digit student ID<input name="student_id" inputMode="numeric" pattern="[0-9]{7}" minLength={7} maxLength={7} required placeholder="e.g. 2028246" value={topUpStudentId} onChange={(event) => { const id = event.target.value.replace(/\D/g, "").slice(0, 7); topUpStudentLookupVersion.current += 1; setTopUpStudentId(id); setTopUpStudent(null); setTopUpStudentConfirmed(false); setTopUpStudentLookupError(""); if (id.length === 7) void lookupTopUpStudent(id); }}/></label>{topUpStudentLookupBusy && <p className="form-message" role="status">Checking the Cedar student account…</p>}{topUpStudent && topUpStudent.student_id === topUpStudentId && <div className="student-profile-confirm"><b>{topUpStudent.full_name}</b><span>Student ID {topUpStudent.student_id}</span><label><input type="checkbox" name="student_confirmed" required checked={topUpStudentConfirmed} onChange={(event) => setTopUpStudentConfirmed(event.target.checked)}/> I verified this name with the student.</label></div>}{topUpStudentLookupError && <p className="form-message error-message" role="alert">{topUpStudentLookupError}</p>}<label>Cash received (PKR)<input name="amount" type="number" min="50" max="5000" step="1" required placeholder="e.g. 500"/></label><label>Note (optional)<input name="note" maxLength={160} placeholder="Cash received at counter"/></label>{props.walletMessage && <p className="form-message" role="status">{props.walletMessage}</p>}<button className="blue-button" disabled={props.walletPending || !topUpStudentConfirmed || topUpStudent?.student_id !== topUpStudentId}>{props.walletPending ? "Recording…" : "Confirm and add credits"}</button></form></section><section className="owner-panel"><span className="section-kicker">HOW THIS CREDIT WORKS</span><h2>Recorded to one student</h2><p>{user?.role === "DEMO_CANTEEN" ? "The seven-digit ID matches the student account. The credit appears in the student wallet after sign-in." : "The seven-digit ID is matched to the student’s Cedar email account. The credit appears in their wallet activity and balance after they sign in. The server records the staff account, amount, and timestamp."}</p><p className="sample-reminder">Use this only after cash has actually been received. Credits are permanent ledger entries; corrections should be handled through an audited adjustment process.</p></section></div></section>}
       {tab === "Wallet top-up history" && props.canTopUp && <section className="owner-content"><div className="panel-heading"><div><span className="section-kicker">WALLET LEDGER</span><h2>Wallet top-up history</h2></div><button onClick={props.onLoadWalletTopUpHistory} disabled={props.walletHistoryLoading}>{props.walletHistoryLoading ? "Loading…" : "↻ Refresh history"}</button></div>{props.walletHistoryError ? <div className="panel-empty large" role="alert"><b>History could not be loaded.</b><p>{props.walletHistoryError}</p><button className="blue-button" onClick={props.onLoadWalletTopUpHistory} disabled={props.walletHistoryLoading}>Try again</button></div> : props.walletHistoryLoading ? <div className="panel-empty large" role="status">Loading recorded wallet top-ups…</div> : props.walletTopUpHistory.length ? <div className="queue-list">{props.walletTopUpHistory.map((entry) => <article className="queue-item history-item" key={entry.id}><div className="queue-number">ID {entry.student_id}<small>Student account</small></div><div className="queue-details"><div><b>{entry.label || "Wallet top-up"}</b><small>{new Date(entry.created_at).toLocaleString("en-PK", { timeZone: "Asia/Karachi" })} · {entry.method ? human(entry.method) : "Cash at counter"} · {entry.recorded_by || "cashier"}</small><small>{(entry.status === "PAYMENT_NOT_RECEIVED" || entry.recorded_by === "student dashboard") ? "Payment not received" : entry.status === "REFUNDED" ? "Wallet refund issued" : "Cash recorded"}</small></div></div><div className={`queue-amount ${entry.kind === "debit" ? "wallet-debit" : "wallet-credit"}`}>{entry.kind === "debit" ? "−" : "+"}{money(entry.amount_paisa)}</div></article>)}</div> : <div className="panel-empty large">No wallet top-ups have been recorded yet.</div>}<p className="sample-reminder">Online transfers are not verified by CedarBite. Do not treat a selected provider as confirmation that funds were received.</p></section>}
+      {tab === "Refunds" && props.station === "cashier" && <section className="owner-content"><div className="panel-heading"><div><span className="section-kicker">COMPLETED ORDERS</span><h2>Refunds</h2><p>Review collected orders and record a refund after it has been returned.</p></div><button type="button" onClick={props.onLoadHistory}>↻ Refresh</button></div>{refundOrders.length ? <div className="queue-list">{refundOrders.map((order) => <article className="queue-item history-item" key={order.id}><div className="queue-number">{order.pickup_code}<small>Pickup number</small></div><div className="queue-details"><div><b>{orderCustomerLabel(order)}</b><small>{new Date(order.completed_at ?? order.created_at).toLocaleString("en-PK", { timeZone: "Asia/Karachi" })} · {human(order.payment_method ?? "cash")} · {human(order.payment_status ?? "unpaid")}</small><p>{order.items.map((line, index) => <span key={`${order.id}-${index}`}>{line.quantity} × {line.name}</span>)}</p></div></div><div className="queue-amount">{order.total_display}</div>{order.refund_status === "REFUNDED" ? <span className="status-pill status-refunded">Refund recorded</span> : (order.payment_method === "wallet" || order.payment_status === "PAID") ? <button type="button" className="queue-action" disabled={props.queuePendingIds.includes(String(order.id))} onClick={() => props.onRefundHistoryOrder(order)}>{props.queuePendingIds.includes(String(order.id)) ? "Recording…" : "Record refund"}</button> : <small className="refund-payment-note">Refund requires a recorded payment.</small>}</article>)}</div> : <div className="panel-empty large">No completed orders are available for refunds.</div>}</section>}
       {tab === "Item of the day" && isDeveloper && <ItemOfDayEditor schedule={props.itemOfDaySchedule} message={props.itemOfDayMessage} pending={props.itemOfDayPending} canManage={canCustomize} onSave={props.onSaveItemOfDaySchedule} />}
       {tab === "Staff passwords" && isDeveloper && <section className="owner-content"><div className="owner-columns"><section className="owner-panel form-panel"><span className="section-kicker">STAFF ACCESS</span><h2>Reset a station password</h2><p>Reset the Counter, Cash desk, or Kitchen monitor password. The order manager password is changed separately in Netlify settings to preserve its recovery path.</p><ResetStationPasswordForm onReset={props.onResetPassword}/></section><section className="owner-panel"><span className="section-kicker">DEVELOPER ACCOUNT</span><h2>Protect this area</h2><p>Use the Change password control above to update the developer login. If account recovery is needed, set <code>CANTEEN_DEVELOPER_PASSWORD</code> in Netlify environment variables, then sign in with the recovered password.</p></section></div></section>}
       {tab === "Export" && isDeveloper && <DeveloperExport onExportData={props.onExportData} items={props.items}/>}
@@ -2332,10 +2470,28 @@ function DeveloperExport({ onExportData, items }: { onExportData: (from: string,
       try { data = await onExportData(from, to); }
       catch (caught) {
         const reason = caught instanceof Error ? caught.message : "";
-        if (IS_NETLIFY_HOSTED || !/SUPABASE_SECRET_KEY/i.test(reason)) throw caught;
+        const localServiceUnavailable = caught instanceof ApiResponseError && caught.localServiceUnavailable;
+        if (IS_NETLIFY_HOSTED || (!localServiceUnavailable && !/SUPABASE_SECRET_KEY/i.test(reason))) throw caught;
+        const pkDay = (value: string) => {
+          const date = new Date(value);
+          return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" }).format(date) : "";
+        };
+        const localOrders = readLocalOrderQueue()
+          .filter((order) => { const day = pkDay(order.created_at); return day && day >= from && day <= to; })
+          .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
         data = {
           period: { from, to, timezone: "Asia/Karachi", generated_at: new Date().toISOString() },
-          orders: [], sales_by_day: [], sales_by_month: [], wallet_entries: [],
+          orders: localOrders.map((order) => ({
+            order_id: String(order.id), pickup_number: order.pickup_code, placed_at: order.created_at,
+            completed_at: order.completed_at ?? "", customer_type: order.customer_type ?? "",
+            student_id: order.customer_type === "STUDENT" ? order.student_id ?? "" : "",
+            customer_name: order.customer_name ?? "", source: order.source ?? "LOCAL", order_type: order.mode,
+            status: order.status, items: order.items.map((item) => `${item.quantity} × ${item.name}`).join("; "),
+            units: order.items.reduce((sum, item) => sum + item.quantity, 0), total_paisa: order.total_paisa ?? 0,
+            payment_method: order.payment_method ?? "", payment_status: order.payment_status ?? "",
+            refunded: order.refund_status === "REFUNDED", refund_amount_paisa: order.refund_amount_paisa ?? 0,
+            refunded_at: order.refunded_at ?? "",
+          })), sales_by_day: [], sales_by_month: [], wallet_entries: [],
           menu_items: items.map((item) => ({ section: item.category, name: item.name, description: item.description, price_paisa: item.price_paisa, available: item.available, pickup_type: [item.quick_allowed && "Quick", item.scheduled_allowed && "Scheduled"].filter(Boolean).join(" + "), options: (item.options ?? []).map((option) => `${option.name}${option.available ? "" : " (out of stock)"}`).join("; "), image_available: Boolean(item.image_data) })),
         };
       }
@@ -2351,6 +2507,7 @@ function DeveloperExport({ onExportData, items }: { onExportData: (from: string,
         ["Created", new Date(data.period.generated_at).toLocaleString("en-PK", { timeZone: "Asia/Karachi" })],
         ["Included", "Daily and monthly sales analysis, order history, wallet ledger, and current menu."],
         ["Order dates", "Orders are selected by their placement date within the chosen period."],
+        ["Order rows included", data.orders.length],
         ["Customer details", "Student rows include their student ID and name. Teacher rows include name only. Email addresses and account IDs are excluded."],
         ["Sales totals", "Sales sheets show payments recorded within each report day for orders placed in the selected period."],
         ["Wallet records", "Wallet activity is filtered by its recorded timestamp; IDs are retained for audit matching."],
@@ -2475,7 +2632,7 @@ function StationSwitchPrompt({ activeStation, activeUser, targetStation, onSignO
   return <div className="station-switch-scrim"><section className="station-switch-dialog" role="dialog" aria-modal="true" aria-labelledby="station-switch-title"><div className="station-switch-icon" aria-hidden="true">↔</div><span className="section-kicker">ACCOUNT ALREADY SIGNED IN</span><h2 id="station-switch-title">Sign out before switching?</h2><p>This browser is signed in to <b>{activeName}</b>. Sign out before entering credentials for <b>{stationName(targetStation)}</b> to avoid a session conflict.</p><button className="blue-button" onClick={onSignOut}>Sign out and continue</button><button className="station-switch-return" onClick={onReturn}>Return to {activeName}</button></section></div>;
 }
 
-function CounterStation({ user, categories, items, pending, darkMode, onToggleTheme, onSignIn, onSignOut, onReturnToActive, onChangePassword, onLookupStudent, onSaveStudentName, onCreate }: { user: User | null; categories: Category[]; items: Item[]; pending: boolean; darkMode: boolean; onToggleTheme: () => void; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void; onReturnToActive: () => void; onChangePassword: (password: string) => Promise<void>; onLookupStudent: (student_id: string) => Promise<StudentLookup>; onSaveStudentName: (student_id: string, full_name: string) => Promise<StudentLookup>; onCreate: (customer: { customer_type: "STUDENT" | "TEACHER"; student_id: string | null; customer_name: string | null }, lines: { item_id: number; option_id?: string; quantity: number; addon_selected: boolean }[]) => Promise<Order> }) {
+function CounterStation({ user, categories, items, pending, darkMode, onToggleTheme, onSignIn, onSignOut, onReturnToActive, onChangePassword, onLookupStudent, onSaveStudentName, onCreate }: { user: User | null; categories: Category[]; items: Item[]; pending: boolean; darkMode: boolean; onToggleTheme: () => void; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void; onReturnToActive: () => void; onChangePassword: (password: string) => Promise<void>; onLookupStudent: (student_id: string) => Promise<StudentLookup>; onSaveStudentName: (student_id: string, full_name: string) => Promise<StudentLookup>; onCreate: (customer: { customer_type: "STUDENT" | "TEACHER" | "GUEST"; student_id: string | null; customer_name: string | null }, lines: { item_id: number; option_id?: string; quantity: number; addon_selected: boolean }[]) => Promise<Order> }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -2485,7 +2642,7 @@ function CounterStation({ user, categories, items, pending, darkMode, onToggleTh
   const [optionDraftQuantities, setOptionDraftQuantities] = useState<Record<string, number>>({});
   const [optionDraftAddons, setOptionDraftAddons] = useState<Record<string, boolean>>({});
   const [counterCategoryId, setCounterCategoryId] = useState<number | "all">("all");
-  const [customerType, setCustomerType] = useState<"STUDENT" | "TEACHER">("STUDENT");
+  const [customerType, setCustomerType] = useState<"STUDENT" | "TEACHER" | "GUEST">("STUDENT");
   const [counterStudentId, setCounterStudentId] = useState("");
   const [counterStudent, setCounterStudent] = useState<StudentLookup | null>(null);
   const [manualStudentName, setManualStudentName] = useState("");
@@ -2592,17 +2749,19 @@ function CounterStation({ user, categories, items, pending, darkMode, onToggleTh
     const form = new FormData(formElement);
     const studentId = counterStudentId;
     const teacherName = String(form.get("teacher_name") ?? "").trim();
+    const guestName = String(form.get("guest_name") ?? "").trim();
     if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId)) { setError("Enter the student’s 7-digit Cedar ID."); return; }
     if (customerType === "STUDENT" && counterStudent?.student_id !== studentId) { setError("Enter a valid student ID and wait for the lookup to finish."); return; }
     const studentName = counterStudent?.full_name?.trim() || manualStudentName.trim();
     if (customerType === "STUDENT" && (!studentName || studentName.length > 100)) { setError("Check the student ID and enter the student’s name as shown on their Cedar ID."); return; }
     if (customerType === "TEACHER" && (!teacherName || teacherName.length > 100)) { setError("Enter the teacher’s name (up to 100 characters)."); return; }
+    if (customerType === "GUEST" && (!guestName || guestName.length > 100)) { setError("Enter the guest’s name (up to 100 characters)."); return; }
     if (!orderLines.length) { setError("Add at least one menu item."); return; }
-    const customer = { customer_type: customerType, student_id: customerType === "STUDENT" ? studentId : null, customer_name: customerType === "STUDENT" ? studentName : teacherName };
+    const customer = { customer_type: customerType, student_id: customerType === "STUDENT" ? studentId : null, customer_name: customerType === "STUDENT" ? studentName : customerType === "TEACHER" ? teacherName : guestName };
     try { const order = await onCreate(customer, orderLines); setPickupId(order.pickup_code); setSuccess("In-person order sent to the canteen queue."); setReceiptRequest({ order, key: createUuid() }); setQuantities({}); setAddonSelections({}); formElement.reset(); setCustomerType("STUDENT"); setCounterStudentId(""); setCounterStudent(null); setManualStudentName(""); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "The order could not be placed."); }
   }
-  return <><main className="stations-page station-workspace"><div className="station-topline"><a href="/stations">← All staff stations</a><div className="station-top-actions">{stationUser && <ChangePasswordForm station="order_taker" onChange={onChangePassword}/>}{stationUser && <button onClick={onSignOut}>Sign out</button>}<ThemeSwitch darkMode={darkMode} onToggle={onToggleTheme} className="station-theme-toggle"/></div></div><span className="section-kicker">COUNTER · IN-PERSON ORDERS</span><h1>Counter station</h1>{stationConflict ? <StationSwitchPrompt activeStation={activeStation} activeUser={user} targetStation="order_taker" onSignOut={onSignOut} onReturn={onReturnToActive}/> : !stationUser ? <form className="owner-lock station-login" onSubmit={(event) => { event.preventDefault(); setError(""); void onSignIn(username, password).catch((reason) => setError(reason instanceof Error ? reason.message : "Sign-in failed.")); }}><h2>Staff sign-in</h2><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required placeholder="Enter username" autoComplete="username"/></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} required type="password" placeholder="Enter password" autoComplete="current-password"/></label>{error && <p className="form-message error-message">{error}</p>}<button className="blue-button">Open counter</button><p className="password-help">Forgot your password? Ask the order manager to reset the counter password.</p></form> : <><form className="counter-order-form" onSubmit={(event) => void submit(event)}><label>Order placed for<select name="customer_type" value={customerType} onChange={(event) => { setCustomerType(event.target.value as "STUDENT" | "TEACHER"); setCounterStudentId(""); setCounterStudent(null); setManualStudentName(""); setCounterStudentLookupError(""); }}><option value="STUDENT">Student</option><option value="TEACHER">Teacher</option></select></label>{customerType === "STUDENT" ? <><label>Student ID<input name="student_id" required inputMode="numeric" pattern="[0-9]{7}" minLength={7} maxLength={7} placeholder="Enter student ID" value={counterStudentId} onChange={(event) => { const id = event.target.value.replace(/\D/g, "").slice(0, 7); counterStudentLookupVersion.current += 1; setCounterStudentId(id); setCounterStudent(null); setManualStudentName(""); setCounterStudentLookupBusy(false); setCounterStudentLookupError(""); if (id.length === 7) void lookupCounterStudent(id); }}/></label>{counterStudentLookupBusy && <p className="form-message" role="status">Checking the Cedar student account…</p>}{counterStudent && counterStudent.student_id === counterStudentId && counterStudent.full_name && <div className="counter-student-found" role="status"><span>Student found</span><b>{counterStudent.full_name}</b><small>Student ID {counterStudent.student_id}{counterStudent.source === "counter" && <> · Saved for future counter orders</>}</small></div>}{counterStudent && counterStudent.student_id === counterStudentId && !counterStudent.full_name && <div className="counter-student-missing"><p className="form-message error-message" role="status"><b>ID not found</b></p><label>Student name<input name="student_name" required maxLength={100} autoComplete="name" placeholder="Enter name as shown on Cedar ID" value={manualStudentName} onChange={(event) => setManualStudentName(event.target.value)}/></label><button type="button" className="blue-button" disabled={!manualStudentName.trim() || counterStudentSaveBusy} onClick={() => void saveCounterStudentName()}>{counterStudentSaveBusy ? "Saving…" : "Save student name"}</button></div>}{counterStudentLookupError && <p className="form-message error-message" role="alert">{counterStudentLookupError}</p>}</> : <label>Teacher name<input name="teacher_name" required maxLength={100} autoComplete="name" placeholder="Enter the teacher’s name"/></label>}<p className="counter-pickup-note">One menu for every item. Counter orders are placed for immediate collection; no pickup slot is needed.</p><div className="counter-items-heading"><div><h2>Choose items</h2><p>Select the items the student or teacher is ordering.</p></div><span>{selectedCount} selected</span></div><div className="menu-layout counter-menu-layout"><nav className="category-sidebar counter-category-sidebar" aria-label="Counter menu categories"><div className="counter-category-heading"><b>Browse categories</b><span>{visibleCategories.length}</span></div><button type="button" className={counterCategoryId === "all" ? "active" : ""} aria-pressed={counterCategoryId === "all"} onClick={() => { setCounterCategoryId("all"); document.querySelector(".counter-menu-category")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>All items</button>{visibleCategories.map((category) => <button type="button" key={category.id} className={counterCategoryId === category.id ? "active" : ""} aria-pressed={counterCategoryId === category.id} onClick={() => { setCounterCategoryId(category.id); document.getElementById("counter-menu-category-" + category.id)?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>{category.name}</button>)}</nav><div className="menu-results counter-menu-results"><div className="counter-category-list">{listedCategories.map((category) => <section className="counter-menu-category" id={"counter-menu-category-" + category.id} key={category.id}><h3>{category.name}</h3><div className="counter-item-list">{category.items.map((item) => <article className={`counter-item-card ${(item.options?.length ? item.options.some((option) => (quantities[lineKey(item.id, option.id)] ?? 0) > 0) : (quantities[lineKey(item.id)] ?? 0) > 0) ? "is-selected" : ""}`} key={item.id}><div className="counter-item-picture"><MenuItemVisual item={item} className="counter-item-visual"/><span className="counter-item-mode">{item.category_id === -1 ? "ITEM OF THE DAY" : "IN-PERSON PICKUP"}</span></div><div className="counter-item-card-info"><div><b>{item.name}</b><strong>{item.price_display}</strong></div><small>{item.description || (item.prep_minutes ? `Ready in about ${item.prep_minutes} minutes` : "Cedar canteen menu item")}</small>{item.options?.length ? <div className="counter-choice-launch"><button type="button" className="counter-choice-open" disabled={!item.options.some((option) => option.available)} onClick={() => openOptionPrompt(item)}>{optionSummary(item) ? "Edit choices" : "Choose options"}<span aria-hidden="true">⌄</span></button>{optionSummary(item) && <small className="counter-choice-summary">{optionSummary(item)}</small>}</div> : <>{item.addon_name && <label className="counter-addon-option"><input type="checkbox" checked={addonSelections[lineKey(item.id)] ?? false} onChange={(event) => setAddonSelections((current) => ({ ...current, [lineKey(item.id)]: event.target.checked }))}/> Add {item.addon_name} · +{money(item.addon_price_paisa ?? 0)}</label>}{quantityControl(item)}</>}</div></article>)}</div></section>)}</div></div></div><div className="counter-total"><span>Order total</span><strong>{money(orderTotal)}</strong></div>{error && <p className="form-message error-message" role="alert">{error}</p>}{success && <div className="counter-order-success" role="status"><b>{success}</b><span>Pickup number: <strong>{pickupId}</strong></span><small>Payment due in cash at pickup.</small></div>}<button ref={placeOrderButtonRef} className="blue-button" disabled={pending}>{pending ? "Sending order…" : "Place in-person order"}</button></form>{showJumpToOrder && <button type="button" className="counter-jump-to-order" onClick={jumpToPlaceOrder} aria-label="Go to place order"><span aria-hidden="true">↓</span><span>Place order</span></button>}</>}</main>{optionPromptItem && <div className="addon-prompt-scrim counter-choice-scrim" onClick={() => setOptionPromptItem(null)}><section className="addon-prompt option-prompt counter-choice-prompt" role="dialog" aria-modal="true" aria-labelledby="counter-choice-title" onClick={(event) => event.stopPropagation()}><span className="section-kicker">COUNTER ORDER</span><h2 id="counter-choice-title">Choose {optionPromptItem.name}</h2><p>Set a quantity for each choice. You can add more than one type of drink.</p><div className="counter-choice-modal-list">{(optionPromptItem.options ?? []).map((option) => <article className={`counter-choice-modal-row ${option.available ? "" : "is-unavailable"}`} key={option.id}><div className="counter-choice-modal-heading"><b>{option.name}</b><span>{option.available ? optionPromptItem.price_display : "Out of stock"}</span></div>{option.available ? <>{optionPromptItem.addon_name && <label className="counter-addon-option"><input type="checkbox" checked={optionDraftAddons[lineKey(optionPromptItem.id, option.id)] ?? false} onChange={(event) => setOptionDraftAddons((current) => ({ ...current, [lineKey(optionPromptItem.id, option.id)]: event.target.checked }))}/> Add {optionPromptItem.addon_name} · +{money(optionPromptItem.addon_price_paisa ?? 0)}</label>}{optionDraftControl(optionPromptItem, option)}</> : <small>This drink is currently unavailable.</small>}</article>)}</div><div className="addon-prompt-actions"><button type="button" onClick={() => setOptionPromptItem(null)}>Cancel</button><button type="button" className="blue-button" onClick={saveOptionPrompt}>Save drink choices</button></div></section></div>}{receiptRequest && <ReceiptPrintView order={receiptRequest.order}/>}</>;
+  return <><main className="stations-page station-workspace"><div className="station-topline"><a href="/stations">← All staff stations</a><div className="station-top-actions">{stationUser && <ChangePasswordForm station="order_taker" onChange={onChangePassword}/>}{stationUser && <button onClick={onSignOut}>Sign out</button>}<ThemeSwitch darkMode={darkMode} onToggle={onToggleTheme} className="station-theme-toggle"/></div></div><span className="section-kicker">COUNTER · IN-PERSON ORDERS</span><h1>Counter station</h1>{stationConflict ? <StationSwitchPrompt activeStation={activeStation} activeUser={user} targetStation="order_taker" onSignOut={onSignOut} onReturn={onReturnToActive}/> : !stationUser ? <form className="owner-lock station-login" onSubmit={(event) => { event.preventDefault(); setError(""); void onSignIn(username, password).catch((reason) => setError(reason instanceof Error ? reason.message : "Sign-in failed.")); }}><h2>Staff sign-in</h2><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required placeholder="Enter username" autoComplete="username"/></label><label>Password<input value={password} onChange={(event) => setPassword(event.target.value)} required type="password" placeholder="Enter password" autoComplete="current-password"/></label>{error && <p className="form-message error-message">{error}</p>}<button className="blue-button">Open counter</button><p className="password-help">Forgot your password? Ask the order manager to reset the counter password.</p></form> : <><form className="counter-order-form" onSubmit={(event) => void submit(event)}><label>Order placed for<select name="customer_type" value={customerType} onChange={(event) => { setCustomerType(event.target.value as "STUDENT" | "TEACHER" | "GUEST"); setCounterStudentId(""); setCounterStudent(null); setManualStudentName(""); setCounterStudentLookupError(""); }}><option value="STUDENT">Student</option><option value="TEACHER">Teacher</option><option value="GUEST">Guest</option></select></label>{customerType === "STUDENT" ? <><label>Student ID<input name="student_id" required inputMode="numeric" pattern="[0-9]{7}" minLength={7} maxLength={7} placeholder="Enter student ID" value={counterStudentId} onChange={(event) => { const id = event.target.value.replace(/\D/g, "").slice(0, 7); counterStudentLookupVersion.current += 1; setCounterStudentId(id); setCounterStudent(null); setManualStudentName(""); setCounterStudentLookupBusy(false); setCounterStudentLookupError(""); if (id.length === 7) void lookupCounterStudent(id); }}/></label>{counterStudentLookupBusy && <p className="form-message" role="status">Checking the Cedar student account…</p>}{counterStudent && counterStudent.student_id === counterStudentId && counterStudent.full_name && <div className="counter-student-found" role="status"><span>Student found</span><b>{counterStudent.full_name}</b><small>Student ID {counterStudent.student_id}{counterStudent.source === "counter" && <> · Saved for future counter orders</>}</small></div>}{counterStudent && counterStudent.student_id === counterStudentId && !counterStudent.full_name && <div className="counter-student-missing"><p className="form-message error-message" role="status"><b>ID not found</b></p><label>Student name<input name="student_name" required maxLength={100} autoComplete="name" placeholder="Enter name as shown on Cedar ID" value={manualStudentName} onChange={(event) => setManualStudentName(event.target.value)}/></label><button type="button" className="blue-button" disabled={!manualStudentName.trim() || counterStudentSaveBusy} onClick={() => void saveCounterStudentName()}>{counterStudentSaveBusy ? "Saving…" : "Save student name"}</button></div>}{counterStudentLookupError && <p className="form-message error-message" role="alert">{counterStudentLookupError}</p>}</> : customerType === "TEACHER" ? <label>Teacher name<input name="teacher_name" required maxLength={100} autoComplete="name" placeholder="Enter the teacher’s name"/></label> : <label>Guest name<input name="guest_name" required maxLength={100} autoComplete="name" placeholder="Enter the guest’s name"/></label>}<p className="counter-pickup-note">One menu for every item. Counter orders are placed for immediate collection; no pickup slot is needed.</p><div className="counter-items-heading"><div><h2>Choose items</h2><p>{customerType === "GUEST" ? "Select the items this guest is ordering." : customerType === "TEACHER" ? "Select the items this teacher is ordering." : "Select the items this student is ordering."}</p></div><span>{selectedCount} selected</span></div><div className="menu-layout counter-menu-layout"><nav className="category-sidebar counter-category-sidebar" aria-label="Counter menu categories"><div className="counter-category-heading"><b>Browse categories</b><span>{visibleCategories.length}</span></div><button type="button" className={counterCategoryId === "all" ? "active" : ""} aria-pressed={counterCategoryId === "all"} onClick={() => { setCounterCategoryId("all"); document.querySelector(".counter-menu-category")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>All items</button>{visibleCategories.map((category) => <button type="button" key={category.id} className={counterCategoryId === category.id ? "active" : ""} aria-pressed={counterCategoryId === category.id} onClick={() => { setCounterCategoryId(category.id); document.getElementById("counter-menu-category-" + category.id)?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>{category.name}</button>)}</nav><div className="menu-results counter-menu-results"><div className="counter-category-list">{listedCategories.map((category) => <section className="counter-menu-category" id={"counter-menu-category-" + category.id} key={category.id}><h3>{category.name}</h3><div className="counter-item-list">{category.items.map((item) => <article className={`counter-item-card ${(item.options?.length ? item.options.some((option) => (quantities[lineKey(item.id, option.id)] ?? 0) > 0) : (quantities[lineKey(item.id)] ?? 0) > 0) ? "is-selected" : ""}`} key={item.id}><div className="counter-item-picture"><MenuItemVisual item={item} className="counter-item-visual"/><span className="counter-item-mode">{item.category_id === -1 ? "ITEM OF THE DAY" : "IN-PERSON PICKUP"}</span></div><div className="counter-item-card-info"><div><b>{item.name}</b><strong>{item.price_display}</strong></div><small>{item.description || (item.prep_minutes ? `Ready in about ${item.prep_minutes} minutes` : "Cedar canteen menu item")}</small>{item.options?.length ? <div className="counter-choice-launch"><button type="button" className="counter-choice-open" disabled={!item.options.some((option) => option.available)} onClick={() => openOptionPrompt(item)}>{optionSummary(item) ? "Edit choices" : "Choose options"}<span aria-hidden="true">⌄</span></button>{optionSummary(item) && <small className="counter-choice-summary">{optionSummary(item)}</small>}</div> : <>{item.addon_name && <label className="counter-addon-option"><input type="checkbox" checked={addonSelections[lineKey(item.id)] ?? false} onChange={(event) => setAddonSelections((current) => ({ ...current, [lineKey(item.id)]: event.target.checked }))}/> Add {item.addon_name} · +{money(item.addon_price_paisa ?? 0)}</label>}{quantityControl(item)}</>}</div></article>)}</div></section>)}</div></div></div><div className="counter-total"><span>Order total</span><strong>{money(orderTotal)}</strong></div>{error && <p className="form-message error-message" role="alert">{error}</p>}{success && <div className="counter-order-success" role="status"><b>{success}</b><span>Pickup number: <strong>{pickupId}</strong></span><small>Payment due in cash at pickup.</small></div>}<button ref={placeOrderButtonRef} className="blue-button" disabled={pending}>{pending ? "Sending order…" : "Place in-person order"}</button></form>{showJumpToOrder && <button type="button" className="counter-jump-to-order" onClick={jumpToPlaceOrder} aria-label="Go to place order"><span aria-hidden="true">↓</span><span>Place order</span></button>}</>}</main>{optionPromptItem && <div className="addon-prompt-scrim counter-choice-scrim" onClick={() => setOptionPromptItem(null)}><section className="addon-prompt option-prompt counter-choice-prompt" role="dialog" aria-modal="true" aria-labelledby="counter-choice-title" onClick={(event) => event.stopPropagation()}><span className="section-kicker">COUNTER ORDER</span><h2 id="counter-choice-title">Choose {optionPromptItem.name}</h2><p>Set a quantity for each choice. You can add more than one type of drink.</p><div className="counter-choice-modal-list">{(optionPromptItem.options ?? []).map((option) => <article className={`counter-choice-modal-row ${option.available ? "" : "is-unavailable"}`} key={option.id}><div className="counter-choice-modal-heading"><b>{option.name}</b><span>{option.available ? optionPromptItem.price_display : "Out of stock"}</span></div>{option.available ? <>{optionPromptItem.addon_name && <label className="counter-addon-option"><input type="checkbox" checked={optionDraftAddons[lineKey(optionPromptItem.id, option.id)] ?? false} onChange={(event) => setOptionDraftAddons((current) => ({ ...current, [lineKey(optionPromptItem.id, option.id)]: event.target.checked }))}/> Add {optionPromptItem.addon_name} · +{money(optionPromptItem.addon_price_paisa ?? 0)}</label>}{optionDraftControl(optionPromptItem, option)}</> : <small>This drink is currently unavailable.</small>}</article>)}</div><div className="addon-prompt-actions"><button type="button" onClick={() => setOptionPromptItem(null)}>Cancel</button><button type="button" className="blue-button" onClick={saveOptionPrompt}>Save drink choices</button></div></section></div>}{receiptRequest && <ReceiptPrintView order={receiptRequest.order}/>}</>;
 }
 
 function KitchenStation({ user, queue, pendingIds, darkMode, onToggleTheme, onSignIn, onSignOut, onReturnToActive, onChangePassword }: { user: User | null; queue: Order[]; pendingIds: string[]; darkMode: boolean; onToggleTheme: () => void; onSignIn: (username: string, password: string) => Promise<void>; onSignOut: () => void; onReturnToActive: () => void; onChangePassword: (password: string) => Promise<void> }) {

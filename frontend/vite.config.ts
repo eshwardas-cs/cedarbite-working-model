@@ -9,6 +9,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      "/.netlify/functions": {
+        target: "http://127.0.0.1:8888",
+        changeOrigin: true,
+      },
       "/api": "http://127.0.0.1:8000",
       "/health": "http://127.0.0.1:8000",
     },
