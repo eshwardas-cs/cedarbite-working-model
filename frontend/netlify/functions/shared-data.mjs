@@ -952,6 +952,8 @@ export default async (request) => {
       if (!await isStaff(request, "order_manager")) return reply({ error: "Sign in to order control to restore an order." }, 401);
       if (typeof body.order_id !== "string" || body.order_id.length > 80) return reply({ error: "Order details are invalid." }, 400);
       const order = await orderDb.restoreOrder(body.order_id, request.headers.get("x-canteen-username") || "order_manager");
+      if (order?.error === "INSUFFICIENT_WALLET_BALANCE") return reply({ error: "This order can’t be restored because the student’s wallet balance is too low. Add enough balance, then try again." }, 409);
+      if (order?.error === "WALLET_REFUND_RECORD_MISSING") return reply({ error: "The wallet refund record could not be verified. The order was not restored; contact the developer." }, 409);
       if (!order) return reply({ error: "This order cannot be restored. Refresh and try again." }, 409);
       return reply({ order });
     }

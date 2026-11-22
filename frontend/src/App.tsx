@@ -1056,7 +1056,6 @@ export default function App() {
   useEffect(() => {
     if (temporaryOpening) { setOrderingReason("Open temporarily · all interfaces active"); return; }
     if (orderingManagerPaused) return;
-    if (!IS_NETLIFY_HOSTED && user?.role === "DEMO_STUDENT") { setOrderingReason("Local order preview"); return; }
     setOrderingReason(isCanteenOpenNow(new Date(businessClock)) ? "Ordering is open" : "Closed · opens at 8:00 AM");
   }, [businessClock, orderingManagerPaused, temporaryOpening, user?.role]);
 
