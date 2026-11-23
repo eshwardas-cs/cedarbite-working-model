@@ -715,7 +715,7 @@ export default async (request) => {
       if (order.status === "CANCELLED") return reply({ order: forStudent(order, customer.role === "student", true), duplicate: true });
       const tooLate = "The canteen has already accepted this order, so it can no longer be cancelled. Please speak to the counter.";
       if (order.status !== "SUBMITTED") return reply({ error: tooLate }, 409);
-      if (order.payment_status === "PAID") return reply({ error: "This order has already been paid at the cash desk. Please speak to the counter to cancel it." }, 409);
+      if (order.payment_status === "PAID") return reply({ error: order.payment_method === "wallet" ? "This order was paid from your CedarBite wallet. Please speak to the counter to cancel it; the amount will be returned to your wallet." : "This order has already been paid at the cash desk. Please speak to the counter to cancel it." }, 409);
       const cancelled = { ...order, status: "CANCELLED", cancelled_at: new Date().toISOString(), cancelled_by: "customer" };
       // Only saves if the order is STILL "submitted": if the kitchen accepted it a moment ago, the kitchen wins.
       const saved = await orderDb.updateOrder(cancelled, { expectedStatus: "SUBMITTED" });
