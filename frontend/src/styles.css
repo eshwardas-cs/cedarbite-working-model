@@ -1170,14 +1170,14 @@ img.counter-item-visual{display:block}
 .hero-editor-save{padding-top:0}
 :root[data-theme="dark"] .hero-editor-card-top .hero-remove-image{border-color:#40546b;background:#1b2e43;color:#edf3f9}
 @media(max-width:760px){
-  .promo-hero{width:calc(100% - 28px);min-height:142px;aspect-ratio:2.55/1;height:auto;margin:12px auto 0;border-radius:18px}
+  .promo-hero{width:calc(100% - 28px);min-height:142px;aspect-ratio:2.45/1;height:auto;margin:12px auto 0;border-radius:18px}
   .hero-banner-image{object-position:center}
   .promo-hero .hero-carousel-dots{bottom:8px}
 }
 @media(min-width:761px) and (max-width:1024px){
   .promo-hero{width:calc(100% - 32px);aspect-ratio:2.55/1;height:auto;min-height:0;margin:16px auto 0;border-radius:20px}
 }
-@media(max-width:390px){.promo-hero{min-height:136px;width:calc(100% - 22px);border-radius:15px}}
+@media(max-width:390px){.promo-hero{min-height:136px;width:calc(100% - 22px);aspect-ratio:2.45/1;border-radius:15px}}
 
 /* Laptop banner is shorter, with visible, easy-to-hit slide controls. */
 @media(min-width:1025px){.promo-hero{height:clamp(330px,34vw,490px);min-height:0;aspect-ratio:auto}}
@@ -1189,6 +1189,13 @@ img.counter-item-visual{display:block}
 .promo-hero .hero-carousel-controls .hero-carousel-dots{bottom:12px}
 @media(max-width:760px){.promo-hero .hero-carousel-controls{padding:0 8px}.promo-hero .hero-carousel-controls .hero-carousel-arrow{width:38px;height:38px}.promo-hero .hero-carousel-controls .hero-carousel-arrow span{font-size:29px}.promo-hero .hero-carousel-controls .hero-carousel-dots{bottom:8px}}
 @media(prefers-reduced-motion:reduce){.promo-hero .hero-carousel-controls .hero-carousel-arrow{transition:none}}
+
+/* Keep signed-in account controls centered on narrow screens across stations. */
+@media(max-width:680px){
+  .header-actions .sign-button{grid-column:1/-1;justify-self:center;width:max-content;max-width:calc(100vw - 36px);min-height:38px;padding:7px 12px;text-align:center;white-space:normal;line-height:1.3}
+  .owner-top-actions .owner-user{flex:0 0 100%;width:100%;max-width:100%;margin-inline:auto;justify-content:center;text-align:center;white-space:normal;overflow-wrap:anywhere}
+  .station-top-actions>button:not(.theme-toggle){margin-inline:auto}
+}
 
 .counter-student-found{margin:2px 0 4px;padding:13px 15px;display:grid;gap:4px;border:1px solid #c9e6d8;border-left:4px solid #23865d;border-radius:8px;background:#f0faf5;color:#163d2e}
 .counter-student-found>span{color:#35785c;font-size:9px;font-weight:800;letter-spacing:.11em;text-transform:uppercase}
