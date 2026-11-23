@@ -2,7 +2,7 @@
 // The browser sends the signed-in person's access token; we ask Supabase who it belongs to and
 // read their profile with the SECRET key. Nothing the browser says about the person is trusted.
 // Never import this file from src/ (anything under src/ is shipped to every visitor's browser).
-import { COUNTER_TEACHER_NAMES, normalizeTeacherName, teacherEmailFromName } from "./counter-teachers.mjs";
+import { normalizeTeacherName } from "./counter-teachers.mjs";
 
 export class CustomerAuthError extends Error {
   constructor(message, status = 401) {
@@ -109,13 +109,31 @@ export async function saveCounterStudentName(studentId, fullName, recordedBy) {
   return { student_id: id, full_name: String(record.full_name).trim(), source: "counter", profile_exists: Boolean(profile), user_id: profile?.id ?? null, email: profile?.email ? String(profile.email).toLowerCase() : `${id}@cedar.edu.pk` };
 }
 
-export async function teacherIdentityFromName(value) {
+export async function teacherIdentityFromName(value, recordedBy = "counter") {
   const name = String(value ?? "").trim().replace(/\s+/g, " ");
-  const rosterName = COUNTER_TEACHER_NAMES.find((candidate) => normalizeTeacherName(candidate) === normalizeTeacherName(name));
-  if (!rosterName) throw new CustomerAuthError("Choose a teacher from the Cedar staff list, or select Guest.", 400);
-  const email = teacherEmailFromName(rosterName);
-  if (!email) throw new CustomerAuthError("The teacher’s Cedar account could not be matched. Ask the developer to update the staff list.", 409);
   const { url, key } = connection();
+  const query = normalizeTeacherName(name);
+  if (!query) throw new CustomerAuthError("Enter the teacher’s name, or select Guest.", 400);
+  const rosterResponse = await fetch(
+    `${url}/rest/v1/counter_teacher_directory?select=full_name,cedar_email&is_active=eq.true&order=full_name.asc`,
+    { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+  );
+  if (!rosterResponse.ok) {
+    console.error("CedarBite teacher directory lookup failed", { status: rosterResponse.status });
+    throw new CustomerAuthError("The Cedar teacher list could not be checked right now. Try again.", 502);
+  }
+  const roster = await rosterResponse.json().catch(() => []);
+  const matches = (Array.isArray(roster) ? roster : []).filter((entry) => {
+    const candidate = normalizeTeacherName(entry?.full_name);
+    return candidate === query || candidate.startsWith(`${query} `);
+  });
+  if (!matches.length) throw new CustomerAuthError("No Cedar teacher matched that name. Check the spelling or select Guest.", 404);
+  if (matches.length > 1) throw new CustomerAuthError("More than one Cedar teacher matches that name. Enter more of the teacher’s name.", 409);
+  const rosterName = String(matches[0].full_name ?? "").trim();
+  const email = String(matches[0].cedar_email ?? "").trim().toLowerCase();
+  if (!rosterName || !/^[a-z0-9][a-z0-9._+-]*@cedar\.edu\.pk$/.test(email)) {
+    throw new CustomerAuthError("The matched teacher’s Cedar account is incomplete. Ask the developer to update the staff list.", 409);
+  }
   const response = await fetch(
     `${url}/rest/v1/profiles?select=id,email,full_name,role&email=eq.${encodeURIComponent(email)}`,
     { headers: { apikey: key, Authorization: `Bearer ${key}` } },
@@ -130,9 +148,31 @@ export async function teacherIdentityFromName(value) {
     if (profile.role !== "teacher" || profileName && normalizeTeacherName(profileName) !== normalizeTeacherName(rosterName)) {
       throw new CustomerAuthError("The entered teacher name does not match the Cedar account. Check the name with them before placing the order.", 409);
     }
-    return { full_name: rosterName, email: String(profile.email).trim().toLowerCase(), user_id: String(profile.id), profile_exists: true };
+    return { full_name: profileName || rosterName, email: String(profile.email).trim().toLowerCase(), user_id: String(profile.id), profile_exists: true };
   }
-  return { full_name: rosterName, email, user_id: null, profile_exists: false };
+
+  const nameRecord = await fetch(`${url}/rest/v1/counter_teacher_names?on_conflict=cedar_email`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=representation",
+    },
+    body: JSON.stringify({
+      cedar_email: email,
+      full_name: rosterName,
+      recorded_by: String(recordedBy ?? "counter").trim().slice(0, 80) || "counter",
+      updated_at: new Date().toISOString(),
+    }),
+  });
+  if (!nameRecord.ok) {
+    console.error("CedarBite could not save a counter-entered teacher name", { status: nameRecord.status });
+    throw new CustomerAuthError("The teacher’s name could not be saved. The order was not placed; try again.", 502);
+  }
+  const [savedName] = (await nameRecord.json().catch(() => [])) ?? [];
+  if (!savedName?.full_name) throw new CustomerAuthError("The teacher’s name could not be confirmed after saving. The order was not placed; try again.", 502);
+  return { full_name: String(savedName.full_name).trim(), email, user_id: null, profile_exists: false };
 }
 
 export async function profileFromEmail(email) {

@@ -747,7 +747,7 @@ export default async (request) => {
       let studentProfile = customerType === "STUDENT"
         ? await customerAuth.studentProfileFromId(studentId, { allowCounterName: true, allowMissingName: true })
         : null;
-      const teacherIdentity = customerType === "TEACHER" ? await customerAuth.teacherIdentityFromName(customerName) : null;
+      const teacherIdentity = customerType === "TEACHER" ? await customerAuth.teacherIdentityFromName(customerName, request.headers.get("x-canteen-username") || "counter") : null;
       if (customerType === "STUDENT" && !studentProfile?.full_name && (!customerName || customerName.length > 100)) return reply({ error: "Verify the student ID and enter the student’s name to place this in-person order." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";

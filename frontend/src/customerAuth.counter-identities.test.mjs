@@ -5,6 +5,10 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
 
 describe("counter customer identity lookup", () => {
   let fetchMock;
+  const teacherRoster = [
+    { full_name: "Adam Asif", cedar_email: "adam.asif@cedar.edu.pk" },
+    { full_name: "Mariam Reza", cedar_email: "mariam.reza@cedar.edu.pk" },
+  ];
 
   beforeEach(() => {
     vi.stubEnv("SUPABASE_URL", "https://cedarbite-test.supabase.co");
@@ -38,19 +42,32 @@ describe("counter customer identity lookup", () => {
     });
   });
 
-  it("uses the roster teacher's first.last Cedar email before the teacher signs in", async () => {
-    await expect(teacherIdentityFromName("Sir Adam Asif")).resolves.toMatchObject({
+  it("resolves a unique first name from the Supabase directory before the teacher signs in", async () => {
+    fetchMock
+      .mockResolvedValueOnce(json(teacherRoster))
+      .mockResolvedValueOnce(json([]))
+      .mockResolvedValueOnce(json([{ cedar_email: "adam.asif@cedar.edu.pk", full_name: "Adam Asif" }]));
+
+    await expect(teacherIdentityFromName("Adam")).resolves.toMatchObject({
       full_name: "Adam Asif",
       email: "adam.asif@cedar.edu.pk",
       user_id: null,
       profile_exists: false,
     });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2][0]).toContain("/rest/v1/counter_teacher_names?on_conflict=cedar_email");
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({
+      cedar_email: "adam.asif@cedar.edu.pk",
+      full_name: "Adam Asif",
+      recorded_by: "counter",
+    });
+    expect(fetchMock.mock.calls[2][1].method).toBe("POST");
   });
 
   it("uses the verified Supabase teacher profile when it already exists", async () => {
-    fetchMock.mockResolvedValueOnce(json([{ id: "teacher-auth-id", email: "adam.asif@cedar.edu.pk", full_name: "Adam Asif", role: "teacher" }]));
+    fetchMock.mockResolvedValueOnce(json(teacherRoster)).mockResolvedValueOnce(json([{ id: "teacher-auth-id", email: "adam.asif@cedar.edu.pk", full_name: "Adam Asif", role: "teacher" }]));
 
-    await expect(teacherIdentityFromName("Adam Asif")).resolves.toMatchObject({
+    await expect(teacherIdentityFromName("Sir Adam Asif")).resolves.toMatchObject({
       full_name: "Adam Asif",
       email: "adam.asif@cedar.edu.pk",
       user_id: "teacher-auth-id",
@@ -59,13 +76,25 @@ describe("counter customer identity lookup", () => {
   });
 
   it("rejects a Cedar email profile whose Supabase role or name differs", async () => {
-    fetchMock.mockResolvedValueOnce(json([{ id: "other-auth-id", email: "adam.asif@cedar.edu.pk", full_name: "Another Person", role: "teacher" }]));
+    fetchMock.mockResolvedValueOnce(json(teacherRoster)).mockResolvedValueOnce(json([{ id: "other-auth-id", email: "adam.asif@cedar.edu.pk", full_name: "Another Person", role: "teacher" }]));
 
     await expect(teacherIdentityFromName("Adam Asif")).rejects.toThrow("does not match the Cedar account");
   });
 
-  it("does not create a teacher identity for names outside the supplied roster", async () => {
-    await expect(teacherIdentityFromName("Unknown Person")).rejects.toThrow("Choose a teacher from the Cedar staff list");
-    expect(fetchMock).not.toHaveBeenCalled();
+  it("rejects a partial name when it matches more than one Cedar teacher", async () => {
+    fetchMock.mockResolvedValueOnce(json([
+      ...teacherRoster,
+      { full_name: "Adam Khan", cedar_email: "adam.khan@cedar.edu.pk" },
+    ]));
+
+    await expect(teacherIdentityFromName("Adam")).rejects.toThrow("More than one Cedar teacher matches");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects names with no match in the Supabase directory", async () => {
+    fetchMock.mockResolvedValueOnce(json(teacherRoster));
+
+    await expect(teacherIdentityFromName("Unknown Person")).rejects.toThrow("No Cedar teacher matched that name");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -1283,6 +1283,19 @@ export default function App() {
     return () => observer.disconnect();
   }, [availableModeCategories, menuReady, page]);
 
+  useEffect(() => {
+    if (page !== "menu" || !window.matchMedia("(max-width: 1024px), (hover: none) and (pointer: coarse)").matches) return;
+    const nav = document.querySelector<HTMLElement>(".menu-layout > .category-sidebar");
+    const active = nav?.querySelector<HTMLElement>("button.active");
+    if (!nav || !active) return;
+    const navBounds = nav.getBoundingClientRect();
+    const activeBounds = active.getBoundingClientRect();
+    if (activeBounds.left < navBounds.left + 12 || activeBounds.right > navBounds.right - 12) {
+      const left = nav.scrollLeft + activeBounds.left - navBounds.left - (nav.clientWidth - activeBounds.width) / 2;
+      nav.scrollTo({ left: Math.max(0, left), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    }
+  }, [categoryFilter, page]);
+
   const quickOrdersOpen = (isCanteenOpenNow(new Date(businessClock)) || temporaryOpening) && !orderingManagerPaused;
   const cartCount = Object.values(cart).reduce((sum, quantity) => sum + quantity, 0);
   const cartListTotal = Object.entries(cart).reduce((sum, [key, quantity]) => { const { itemId, withAddon } = readCartLineKey(key); const item = sellableItems.find((candidate) => candidate.id === itemId); return sum + (item ? item.price_paisa + (withAddon ? item.addon_price_paisa ?? 0 : 0) : 0) * quantity; }, 0);

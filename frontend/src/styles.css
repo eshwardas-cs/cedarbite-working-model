@@ -693,7 +693,7 @@ img.counter-item-visual{display:block}
   .store-nav button:nth-of-type(1)::before{content:'⌂'}
   .store-nav button:nth-of-type(2)::before{content:'✦'}
   .store-nav button:nth-of-type(3)::before{content:''}
-  .store-nav button:nth-of-type(3)::after{height:14px;width:14px;top:50%;right:auto;bottom:auto;left:16px;transform:translateY(-50%);background:currentColor;content:'';-webkit-mask:url('/assets/icons/mail.svg') center/contain no-repeat;mask:url('/assets/icons/mail.svg') center/contain no-repeat}
+  .store-nav button:nth-of-type(3)::after{position:absolute;height:14px;width:14px;top:50%;right:auto;bottom:auto;left:16px;transform:translateY(-50%);background:currentColor;content:'';pointer-events:none;-webkit-mask:url('/assets/icons/mail.svg') center/contain no-repeat;mask:url('/assets/icons/mail.svg') center/contain no-repeat}
   .store-nav button:nth-of-type(4)::before{content:'✉'}
   .store-nav button:nth-of-type(5)::before{content:'◷'}
   .store-nav button.selected{border-color:#e7bd38;background:#fff7dc;color:#102b4c;box-shadow:0 3px 10px #bd8a1018}
@@ -1197,6 +1197,36 @@ img.counter-item-visual{display:block}
   .station-top-actions>button:not(.theme-toggle){margin-inline:auto}
 }
 
+/* Small screens and touch-first devices use a full-width swipeable category lane. */
+@media(max-width:1024px), (hover:none) and (pointer:coarse){
+  .counter-menu-layout,.menu-layout{grid-template-columns:minmax(0,1fr);gap:10px}
+  .counter-category-sidebar,.menu-layout>.category-sidebar{
+    position:sticky;top:0;z-index:25;align-self:stretch;
+    width:100vw;max-width:100vw;height:auto;min-height:0;max-height:none;
+    margin-left:calc(50% - 50vw);padding:8px 16px;
+    display:flex;align-items:center;gap:8px;
+    overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;
+    border:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    border-radius:0;background:var(--surface,#fff);
+    scrollbar-width:none;-ms-overflow-style:none;-webkit-overflow-scrolling:touch;
+  }
+  .counter-category-sidebar::-webkit-scrollbar,.menu-layout>.category-sidebar::-webkit-scrollbar{display:none;width:0;height:0}
+  .counter-category-sidebar button,.menu-layout>.category-sidebar button{width:auto;min-width:max-content;flex:0 0 auto;scroll-snap-align:start;white-space:nowrap}
+  :root[data-theme="dark"] .counter-category-sidebar,:root[data-theme="dark"] .menu-layout>.category-sidebar{border-color:#3a5069;background:#101d2d}
+}
+
+/* Let the legal-page table of contents begin at the device's left edge. */
+@media(max-width:800px), (hover:none) and (pointer:coarse){
+  .legal-content-grid{display:block}
+  .legal-index{
+    position:sticky;top:0;z-index:25;
+    width:100vw;max-width:100vw;margin-left:calc(50% - 50vw);margin-right:0;
+    padding-right:max(16px,5vw);padding-left:max(16px,5vw);
+    border-right:0;border-left:0;border-radius:0;
+  }
+}
+@media(min-width:851px) and (hover:none) and (pointer:coarse){.legal-index{top:82px}}
+
 .counter-student-found{margin:2px 0 4px;padding:13px 15px;display:grid;gap:4px;border:1px solid #c9e6d8;border-left:4px solid #23865d;border-radius:8px;background:#f0faf5;color:#163d2e}
 .counter-student-found>span{color:#35785c;font-size:9px;font-weight:800;letter-spacing:.11em;text-transform:uppercase}
 .counter-student-found>b{color:#102b4c;font-size:20px;font-weight:800;line-height:1.2}
@@ -1543,3 +1573,56 @@ img.counter-item-visual{display:block}
 /* Softer light-mode college mark and theme crossfade */
 .contact-card.contact-location{background:linear-gradient(145deg,#fffdf7,#f1f6fb);border-color:#e0e7ef;color:#102b4c;box-shadow:0 12px 30px #102b4c0c}.contact-location .contact-card-label{color:#8c6d12}.contact-location>small{color:#63758a}.contact-college-logo{position:relative;overflow:visible;border-color:#dae4ef;background:#eaf0f7;box-shadow:0 5px 14px #102b4c12}.contact-college-logo img{grid-area:1/1;object-fit:contain;transition:opacity .28s ease,transform .28s ease}.college-logo-light{opacity:1}.college-logo-dark{opacity:0;display:block}:root[data-theme="dark"] .contact-card.contact-location{background:linear-gradient(145deg,#142337,#1c3651);border-color:#304258;color:#f1f5fa;box-shadow:0 12px 30px #0002}:root[data-theme="dark"] .contact-location .contact-card-label{color:#ffe082}:root[data-theme="dark"] .contact-location>small{color:#c3cfdb}:root[data-theme="dark"] .contact-college-logo{border-color:#ffffff20;background:transparent;box-shadow:none}:root[data-theme="dark"] .college-logo-light{opacity:0;transform:scale(.9)}:root[data-theme="dark"] .college-logo-dark{opacity:1;transform:scale(1)}
 @media(prefers-reduced-motion:reduce){.contact-college-logo img{transition:none}}
+
+/* Keep the active menu category visible while the page scrolls on touch screens. */
+@media(max-width:1024px), (hover:none) and (pointer:coarse){
+  .header-actions .sign-button{
+    grid-column:1/-1;justify-self:center;width:min(100%,360px);min-width:0;max-width:100%;
+    display:block;margin-inline:auto;
+    padding:7px 12px;font-size:clamp(9px,1.15vw,12px);line-height:1.25;
+    text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+}
+
+/* Use the phone-style navigation on compact tablets, including iPad mini in landscape. */
+@media(hover:none) and (pointer:coarse) and (min-width:851px) and (max-width:1200px){
+  .store-header,.store-header:has(.store-nav){height:auto;min-height:70px;padding:9px 20px;position:relative;grid-template-columns:minmax(0,1fr) auto;gap:0}
+  .store-header .wordmark{grid-column:1;grid-row:1}
+  .mobile-menu-toggle{min-height:44px;padding:0 13px;display:inline-flex;grid-column:2;grid-row:1;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--navy);font-size:12px;font-weight:800}
+  .header-menu{display:none;grid-column:1/-1;grid-row:2;width:100%;margin-top:9px;padding:12px 0 3px;border-top:1px solid var(--line)}
+  .header-menu.is-open{display:grid;gap:12px;max-height:calc(100dvh - 74px);overflow-y:auto;overscroll-behavior:contain}
+  .store-nav{height:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;overflow:visible}
+  .store-nav button{min-height:46px;padding:0 12px;border-radius:7px;text-align:left}
+  .header-actions{grid-column:auto;grid-row:auto;width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .wallet-header,.basket-header,.owner-entry{width:100%;min-width:0;min-height:46px;justify-content:center}
+  .wallet-header{justify-items:center}
+  .owner-entry{display:block}
+  .theme-toggle{display:none}
+  .owner-app{display:block;min-height:100dvh}
+  .owner-sidebar{min-height:0;padding:9px 18px;position:sticky;top:0;z-index:50;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;border-bottom:1px solid #ffffff26}
+  .owner-logo{min-width:0;padding:0;border:0;font-size:17px;line-height:1.1}
+  .owner-logo .cedar-mark{width:38px;height:38px}
+  .owner-mobile-toggle{min-height:44px;max-width:260px;padding:0 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #ffffff45;border-radius:8px;background:#173c64;color:#fff;font-size:12px;font-weight:750}
+  .owner-mobile-toggle>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .owner-mobile-toggle>b{display:flex;align-items:center;gap:8px;color:#d8e3ee;font-size:10px;white-space:nowrap}
+  .owner-mobile-toggle i{font-size:18px;font-style:normal;line-height:1}
+  .owner-nav-content{display:none;position:absolute;top:100%;left:0;right:0;max-height:calc(100dvh - 64px);overflow-y:auto;overscroll-behavior:contain;padding:14px 18px 18px;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;background:#102b4c;box-shadow:0 16px 28px #07182c38}
+  .owner-nav-content.is-open{display:grid}
+  .owner-sidebar .sidebar-label{grid-column:1/-1;margin:1px 2px 5px}
+  .owner-sidebar .sidebar-link{width:100%;min-width:0;height:auto;min-height:48px;margin:0;padding:9px 11px;gap:9px;border-radius:7px;font-size:11px;line-height:1.25}
+  .owner-sidebar .sidebar-link>span{width:19px;flex:none}
+  .owner-sidebar .sidebar-link i{width:19px;height:19px;flex:none}
+  .owner-sidebar .sidebar-spacer,.owner-sidebar>.service-state,.owner-sidebar>.back-store{display:none}
+  .owner-nav-content .owner-mobile-back-store,.owner-nav-content .owner-all-stations-link{display:block;grid-column:1/-1;margin:7px 0 0;padding:11px;border-top:1px solid #ffffff2b;color:#e0e8f1}
+  .owner-topbar{min-height:0;padding:16px 20px;align-items:flex-start;gap:12px}
+  .owner-topbar h1{font-size:21px;line-height:1.2}
+  .owner-top-actions{max-width:52%;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+  .owner-top-actions .owner-user{max-width:100%;font-size:10px;white-space:normal;overflow-wrap:anywhere}
+  .owner-top-actions .staff-password-panel{max-width:100%}
+  .owner-content{padding:22px 20px 36px}
+  .owner-columns{grid-template-columns:minmax(0,1fr)}
+  .owner-lock{width:min(460px,calc(100% - 40px));min-height:calc(100dvh - 150px);padding:32px 0}
+  .owner-lock h2{font-size:clamp(30px,4vw,38px)}
+  :root[data-theme="dark"] .owner-nav-content.is-open{background:#142337}
+  :root[data-theme="dark"] .mobile-menu-toggle{background:#17283c;color:#f3f6fb;border-color:#344961}
+}
