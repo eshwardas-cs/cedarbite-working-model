@@ -78,3 +78,8 @@
   from = "/order-confirmation"
   to = "/index.html"
   status = 200
+
+[[redirects]]
+  from = "/payment"
+  to = "/index.html"
+  status = 200
