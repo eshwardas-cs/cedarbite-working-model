@@ -7,11 +7,19 @@ import * as walletStore from "../../shared/wallet-store.mjs";
 import * as notifications from "../../shared/notifications.mjs";
 import { isCanteenOpenNow, isPickupSlotWindowOpen, listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
-const store = getStore({
-  name: "cedarbite-shared-pilot",
-  region: "ap-southeast-1",
-  consistency: "strong",
-});
+// Open the Blobs store on EVERY request, never once at start-up. Netlify hands each request a
+// short-lived access token; a store created once keeps the first token, and because the function
+// stays warm (staff screens poll every few seconds) that token expires and every read then fails
+// with "Failed to decode token: Token expired" (401). Each request handles one call at a time,
+// so resetting this at the start of the handler is safe.
+let store;
+function openStore() {
+  return getStore({
+    name: "cedarbite-shared-pilot",
+    region: "ap-southeast-1",
+    consistency: "strong",
+  });
+}
 
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
 const reply = (body, status = 200, extraHeaders = {}) => new Response(JSON.stringify(body), { status, headers: { ...headers, ...extraHeaders } });
@@ -377,6 +385,7 @@ function priceSharedOrderLines(catalog, lines, mode) {
 const orderDb = orderStore;
 
 export default async (request) => {
+  store = openStore();
   let operation = request.method === "GET" ? "load shared canteen data" : "save shared canteen data";
   try {
     const url = new URL(request.url);
