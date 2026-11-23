@@ -5,7 +5,6 @@ import { OrderSubmissionUncertainError, submitOrderWithRecovery } from "./orderS
 import { fetchMenuFromSupabase } from "./menuApi";
 import { signInWithGoogle, signOutOfSupabase, takeSignInErrorFromUrl, userFromSession } from "./authApi";
 import { supabase, supabaseConfigured } from "./supabaseClient";
-import { COUNTER_TEACHER_NAMES, normalizeTeacherName } from "../shared/counter-teachers.mjs";
 
 type User = { email: string; role: string; email_verified: boolean; student_id: string | null; permissions: string[]; csrf_token: string; source?: "supabase"; full_name?: string | null };
 type MenuOption = { id: string; name: string; available: boolean };
@@ -540,15 +539,8 @@ export default function App() {
   async function submitCounterOrder(order: Record<string, unknown>): Promise<Order> {
     if (!isCanteenOpenNow() && !temporaryOpening && (IS_NETLIFY_HOSTED || user?.role !== "DEMO_CANTEEN")) throw new Error("We are currently not accepting orders.");
     if (!IS_NETLIFY_HOSTED && user?.role === "DEMO_CANTEEN") {
-      if (order.customer_type === "TEACHER") {
-        const enteredName = normalizeTeacherName(order.customer_name);
-        const matches = COUNTER_TEACHER_NAMES.filter((name) => {
-          const rosterName = normalizeTeacherName(name);
-          return rosterName === enteredName || rosterName.startsWith(`${enteredName} `);
-        });
-        if (matches.length !== 1) throw new Error(matches.length ? "More than one Cedar teacher matches that name. Enter more of the teacher’s name." : "No Cedar teacher matched that name. Check the spelling.");
-        order = { ...order, customer_name: matches[0] };
-      }
+      // The real teacher list is checked by the server; this local preview only needs a name.
+      if (order.customer_type === "TEACHER" && !String(order.customer_name ?? "").trim()) throw new Error("Enter the teacher’s name.");
       const createdAt = typeof order.created_at === "string" && Number.isFinite(Date.parse(order.created_at)) ? order.created_at : new Date().toISOString();
       const localOrder = { ...order, created_at: createdAt, source: "COUNTER", status: "SUBMITTED", payment_method: "cash", payment_status: "UNPAID" } as unknown as Order;
       writeLocalOrderQueue([localOrder, ...readLocalOrderQueue().filter((entry) => String(entry.id) !== String(localOrder.id))]);

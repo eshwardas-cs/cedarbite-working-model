@@ -12,3 +12,6 @@ dist/
 *.tsbuildinfo
 .pytest_cache/
 .netlify/
+
+# Private data that must never be committed (e.g. Cedar staff list seed)
+supabase/private/
