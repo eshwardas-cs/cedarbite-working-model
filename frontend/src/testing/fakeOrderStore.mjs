@@ -16,7 +16,7 @@ export const listActive = vi.fn(async () => [...rows.values()].filter((o) => !fi
 export const listHistory = vi.fn(async (limit = 100) => [...rows.values()].filter((o) => finished(o) && !voided(o))
   .sort((a, b) => String(b.completed_at ?? "").localeCompare(String(a.completed_at ?? ""))).slice(0, limit).map(copy));
 export const listAll = vi.fn(async () => [...rows.values()].sort(byCreated).map(copy));
-export const listForCustomer = vi.fn(async (userId, limit = 100) => [...rows.values()].filter((o) => o.customer_user_id === userId)
+export const listForCustomer = vi.fn(async (userId, email, limit = 100) => [...rows.values()].filter((o) => o.customer_user_id === userId || String(o.customer_email ?? "").toLowerCase() === String(email ?? "").toLowerCase())
   .sort((a, b) => byCreated(b, a)).slice(0, limit).map(copy));
 export const insertOrder = vi.fn(async (order) => {
   if (rows.has(String(order.id))) return false;

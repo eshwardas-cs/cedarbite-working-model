@@ -60,6 +60,7 @@ describe("cash desk and order workflow actions", () => {
 
       if (url === "/api/pickup-windows") return jsonResponse({ windows: [] });
       if (url === "/api/auth/google/status") return jsonResponse({ configured: false });
+      if (method === "POST" && body?.action === "login") return jsonResponse({ ok: true, station: body.station, username: body.username });
       if (url === "/api/menu") return jsonResponse({ categories: [] });
       if (url.includes("scope=menu")) return jsonResponse({ categories: null });
       if (url.includes("scope=availability")) return jsonResponse({ availability: {} });
@@ -85,6 +86,36 @@ describe("cash desk and order workflow actions", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("opens the cash desk after the server confirms that station login", async () => {
+    window.history.replaceState({}, "", "/cash-desk");
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    render(<App/>);
+
+    fireEvent.change(await screen.findByPlaceholderText("Enter username"), { target: { value: "cashdesk" } });
+    fireEvent.change(screen.getByPlaceholderText("Enter password"), { target: { value: "cashdesk-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Log in to cash desk" }));
+
+    expect(await screen.findByText("Canteen workspace · shared queue and availability")).toBeInTheDocument();
+    expect(requests.find((request) => request.body?.action === "login")?.body).toMatchObject({ station: "cashier", username: "cashdesk" });
+  });
+
+  it("keeps teacher and guest counter orders as separate customer types", async () => {
+    setStationSession("/counter", "order_taker", ["counter.orders.create"]);
+    render(<App/>);
+
+    const customerType = await screen.findByRole("combobox", { name: "Order placed for" });
+    expect(customerType).toHaveDisplayValue("Student");
+    expect(screen.getByRole("option", { name: "Teacher" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Guest" })).toBeInTheDocument();
+
+    fireEvent.change(customerType, { target: { value: "TEACHER" } });
+    expect(await screen.findByPlaceholderText("Search the Cedar teacher list")).toBeInTheDocument();
+    expect(document.getElementById("cedar-counter-teachers")?.querySelector('option[value="Adam Asif"]')).not.toBeNull();
+
+    fireEvent.change(customerType, { target: { value: "GUEST" } });
+    expect(await screen.findByPlaceholderText("Enter guest name")).toBeInTheDocument();
   });
 
   it("records cash received and removes that order from the unpaid cash list", async () => {

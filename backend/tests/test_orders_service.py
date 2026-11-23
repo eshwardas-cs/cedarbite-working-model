@@ -63,10 +63,10 @@ class QuoteTests(OrderTestBase):
     def test_item_allowing_both_modes_joins_a_scheduled_cart(self):
         self.assertEqual(self.quote([(self.water, 1), (self.burger, 1)]).mode, Mode.SCHEDULED)
 
-    def test_quick_only_and_scheduled_only_must_be_split(self):
+    def test_quick_only_and_scheduled_only_cart_uses_scheduled_mode(self):
         q = self.quote([(self.chips, 1), (self.burger, 1)])
-        self.assertIsNone(q.mode)
-        self.assertTrue(any("separate orders" in p for p in q.problems))
+        self.assertEqual(q.mode, Mode.SCHEDULED)
+        self.assertEqual(q.problems, [])
 
     def test_unavailable_and_archived_items_are_reported(self):
         menu.set_availability(self.db, self.owner, self.water, False)

@@ -44,7 +44,14 @@ vi.mock("../shared/menu-store.mjs", () => menu);
 const customer = vi.hoisted(() => {
   class CustomerAuthError extends Error { constructor(message, status = 401) { super(message); this.status = status; } }
   const student = { user_id: "6b1f3c1e-0000-4000-8000-000000000001", email: "1234567@cedar.edu.pk", role: "student", student_id: "1234567" };
-  return { CustomerAuthError, student, customerFromRequest: vi.fn(async () => student) };
+  return {
+    CustomerAuthError,
+    student,
+    customerFromRequest: vi.fn(async () => student),
+    studentProfileFromId: vi.fn(async (student_id) => ({ student_id, full_name: null, source: "missing", profile_exists: false, user_id: null, email: `${student_id}@cedar.edu.pk` })),
+    saveCounterStudentName: vi.fn(async (student_id, full_name) => ({ student_id, full_name, source: "counter", profile_exists: false, user_id: null, email: `${student_id}@cedar.edu.pk` })),
+    teacherIdentityFromName: vi.fn(async (full_name) => ({ full_name, email: "adam.asif@cedar.edu.pk", user_id: null, profile_exists: false })),
+  };
 });
 vi.mock("../shared/customer-auth.mjs", () => customer);
 vi.mock("../shared/order-store.mjs", () => import("./testing/fakeOrderStore.mjs"));
@@ -61,9 +68,11 @@ const getDeveloperExport = (from = "2026-11-19", to = "2026-11-19", headers = {}
 const studentOrder = (items) => ({ action: "create-order", order: { id: "2f8e0942-21a1-49db-8134-26b6fc73e008", pickup_code: "CB12AB34", mode: "QUICK", payment_method: "cash", items } });
 
 const savedPassword = process.env.CANTEEN_DASHBOARD_PASSWORD;
+const savedCounterPassword = process.env.CANTEEN_COUNTER_PASSWORD;
 const savedCashierPassword = process.env.CANTEEN_CASHIER_PASSWORD;
 const savedDeveloperPassword = process.env.CANTEEN_DEVELOPER_PASSWORD;
 afterAll(() => { process.env.CANTEEN_DASHBOARD_PASSWORD = savedPassword; });
+afterAll(() => { if (savedCounterPassword === undefined) delete process.env.CANTEEN_COUNTER_PASSWORD; else process.env.CANTEEN_COUNTER_PASSWORD = savedCounterPassword; });
 afterAll(() => { if (savedCashierPassword === undefined) delete process.env.CANTEEN_CASHIER_PASSWORD; else process.env.CANTEEN_CASHIER_PASSWORD = savedCashierPassword; });
 afterAll(() => { if (savedDeveloperPassword === undefined) delete process.env.CANTEEN_DEVELOPER_PASSWORD; else process.env.CANTEEN_DEVELOPER_PASSWORD = savedDeveloperPassword; });
 
@@ -71,6 +80,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-11-19T03:00:00.000Z"));
   process.env.CANTEEN_DASHBOARD_PASSWORD = "manager-test-password";
+  process.env.CANTEEN_COUNTER_PASSWORD = "counter-test-password";
   process.env.CANTEEN_DEVELOPER_PASSWORD = "developer-test-password";
   mockStore.values.clear();
   mockStore.setJSON.mockClear();
@@ -235,6 +245,60 @@ describe("online orders need a Cedar sign-in", () => {
   });
 });
 
+describe("counter order customer identity", () => {
+  const COUNTER = { "x-canteen-role": "order_taker", "x-canteen-username": "counter", "x-canteen-password": "counter-test-password" };
+  const counterOrder = (id, pickup_code, customer) => post({
+    action: "create-counter-order",
+    order: {
+      id,
+      pickup_code,
+      mode: "QUICK",
+      payment_method: "cash",
+      ...customer,
+      items: [{ item_id: 1, name: "Samosa", quantity: 1 }],
+    },
+  }, COUNTER);
+
+  it("stores a student's Cedar email even before their first sign-in", async () => {
+    const response = await counterOrder("counter-student-order", "CB12AB34", {
+      customer_type: "STUDENT",
+      student_id: "2526245",
+      customer_name: "New Student",
+    });
+
+    expect(response.status).toBe(201);
+    expect(orderDb.rows.get("counter-student-order")).toMatchObject({
+      customer_type: "STUDENT",
+      customer_email: "2526245@cedar.edu.pk",
+      customer_user_id: null,
+      student_id: "2526245",
+      customer_name: "New Student",
+    });
+  });
+
+  it("saves teacher and guest orders with distinct types and only links the teacher account", async () => {
+    const teacherResponse = await counterOrder("counter-teacher-order", "CB12AB35", {
+      customer_type: "TEACHER",
+      customer_name: "Adam Asif",
+    });
+    const guestResponse = await counterOrder("counter-guest-order", "CB12AB36", {
+      customer_type: "GUEST",
+      customer_name: "Visitor Name",
+    });
+
+    expect(teacherResponse.status).toBe(201);
+    expect(orderDb.rows.get("counter-teacher-order")).toMatchObject({
+      customer_type: "TEACHER",
+      customer_email: "adam.asif@cedar.edu.pk",
+      customer_user_id: null,
+      customer_name: "Adam Asif",
+    });
+    expect(guestResponse.status).toBe(201);
+    expect(orderDb.rows.get("counter-guest-order")).toMatchObject({ customer_type: "GUEST", customer_name: "Visitor Name" });
+    expect(orderDb.rows.get("counter-guest-order")).toHaveProperty("customer_email", null);
+  });
+});
+
 describe("My orders for Google users", () => {
   const myOrders = () => sharedData(new Request(`${ENDPOINT}?scope=my-orders`, { headers: { Authorization: "Bearer t" } }));
   const order = (id, code) => ({ action: "create-order", order: { id, pickup_code: code, mode: "QUICK", payment_method: "cash", items: [{ item_id: 1, name: "Samosa", quantity: 1 }] } });
@@ -262,6 +326,84 @@ describe("My orders for Google users", () => {
     customer.customerFromRequest.mockResolvedValueOnce(OTHER);
     const other = await (await myOrders()).json();
     expect(other.orders.map((o) => o.pickup_code)).toEqual(["CB222222"]);
+  });
+
+  it("finds a student counter order by Cedar email after the student first signs in", async () => {
+    orderDb.rows.set("counter-first-order", {
+      id: "counter-first-order",
+      pickup_code: "CB8A8A8A",
+      status: "SUBMITTED",
+      mode: "QUICK",
+      source: "COUNTER",
+      customer_type: "STUDENT",
+      customer_name: "Name entered at the counter",
+      student_id: "1234567",
+      customer_user_id: null,
+      customer_email: "1234567@cedar.edu.pk",
+      created_at: "2026-11-19T03:00:00.000Z",
+      items: [{ name: "Samosa", quantity: 1 }],
+    });
+    customer.customerFromRequest.mockResolvedValueOnce({ ...customer.student, full_name: "Supabase Profile Name" });
+
+    const { orders } = await (await myOrders()).json();
+    expect(orders).toEqual([expect.objectContaining({
+      pickup_code: "CB8A8A8A",
+      customer_type: "STUDENT",
+      student_id: "1234567",
+      customer_name: "Supabase Profile Name",
+    })]);
+    expect(orders[0]).not.toHaveProperty("customer_email");
+  });
+
+  it("shows a teacher's unclaimed counter orders after first sign-in", async () => {
+    orderDb.rows.set("counter-teacher-first-order", {
+      id: "counter-teacher-first-order",
+      pickup_code: "CB8A8A8B",
+      status: "SUBMITTED",
+      mode: "QUICK",
+      source: "COUNTER",
+      customer_type: "TEACHER",
+      customer_name: "Adam Asif",
+      customer_user_id: null,
+      customer_email: "adam.asif@cedar.edu.pk",
+      created_at: "2026-11-19T03:00:00.000Z",
+      items: [{ name: "Samosa", quantity: 1 }],
+    });
+    customer.customerFromRequest.mockResolvedValueOnce({
+      user_id: "teacher-auth-id",
+      email: "adam.asif@cedar.edu.pk",
+      role: "teacher",
+      student_id: null,
+      full_name: "Adam Asif",
+    });
+
+    const { orders } = await (await myOrders()).json();
+    expect(orders).toEqual([expect.objectContaining({
+      pickup_code: "CB8A8A8B",
+      customer_type: "TEACHER",
+      customer_name: "Adam Asif",
+    })]);
+    expect(orders[0]).not.toHaveProperty("customer_email");
+  });
+
+  it("does not show another Cedar account's counter order by email", async () => {
+    orderDb.rows.set("other-counter-order", {
+      id: "other-counter-order",
+      pickup_code: "CB9B9B9B",
+      status: "SUBMITTED",
+      mode: "QUICK",
+      source: "COUNTER",
+      customer_type: "STUDENT",
+      customer_name: "Other Student",
+      student_id: "7654321",
+      customer_user_id: null,
+      customer_email: "7654321@cedar.edu.pk",
+      created_at: "2026-11-19T03:00:00.000Z",
+      items: [{ name: "Samosa", quantity: 1 }],
+    });
+
+    const { orders } = await (await myOrders()).json();
+    expect(orders).toEqual([]);
   });
 
   it("still finds an order after the canteen moves it to history", async () => {
