@@ -1626,3 +1626,21 @@ img.counter-item-visual{display:block}
   :root[data-theme="dark"] .owner-nav-content.is-open{background:#142337}
   :root[data-theme="dark"] .mobile-menu-toggle{background:#17283c;color:#f3f6fb;border-color:#344961}
 }
+
+/* Online payment (UBL) preview */
+.online-pay-note{margin:8px 0 0;font-size:12px;line-height:1.45;color:#6b5200;background:#fff3c9;border:1px solid #ffc928;border-radius:10px;padding:8px 10px}
+.online-pay-preview-banner{margin:0 0 18px;font-size:13px;font-weight:700;color:#6b5200;background:#fff3c9;border:1.5px dashed #e0a800;border-radius:12px;padding:9px 12px;text-align:center}
+.online-pay-summary{display:grid;grid-template-columns:auto 1fr;gap:8px 18px;margin:16px auto;max-width:320px;font-size:15px;font-variant-numeric:tabular-nums}
+.online-pay-summary dt{color:#68788b;text-align:left}.online-pay-summary dd{margin:0;font-weight:700;text-align:right}
+.online-pay-actions{display:grid;gap:10px;margin-top:18px}
+.online-pay-actions .blue-button{width:100%;justify-content:center}
+.online-pay-decline{appearance:none;background:transparent;border:1.5px solid #b3261e;color:#b3261e;border-radius:12px;padding:12px 16px;font:700 15px 'DM Sans',sans-serif;cursor:pointer}
+.online-pay-link{appearance:none;background:none;border:0;color:inherit;text-decoration:underline;font:600 14px 'DM Sans',sans-serif;margin-top:14px;cursor:pointer}
+.online-pay-spinner{width:44px;height:44px;margin:6px auto 16px;border-radius:50%;border:4px solid #e6eaf0;border-top-color:#102b4c;animation:online-pay-spin .9s linear infinite}
+@keyframes online-pay-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.online-pay-spinner{animation:none;border-top-color:#ffc928}}
+.online-pay-cross{width:64px;height:64px;margin:0 auto 12px;border-radius:50%;display:grid;place-items:center;font-size:32px;font-weight:800;background:#fbe7e5;color:#b3261e}
+:root[data-theme="dark"] .online-pay-summary dt{color:#b2c0cf}
+:root[data-theme="dark"] .online-pay-note,:root[data-theme="dark"] .online-pay-preview-banner{background:#3a3012;color:#ffe08a}
+:root[data-theme="dark"] .online-pay-decline{color:#ff8a80;border-color:#ff8a80}
+:root[data-theme="dark"] .online-pay-spinner{border-color:#33465d;border-top-color:#ffc928}
