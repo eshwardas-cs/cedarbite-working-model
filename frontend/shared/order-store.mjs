@@ -72,6 +72,7 @@ export function rowFromOrder(order) {
     source: String(order.source ?? "ONLINE"),
     mode: String(order.mode ?? "QUICK"),
     customer_user_id: typeof order.customer_user_id === "string" ? order.customer_user_id : null,
+    customer_email: typeof order.customer_email === "string" ? order.customer_email.trim().toLowerCase() : null,
     student_id: order.student_id == null ? null : String(order.student_id),
     total_paisa: Number.isSafeInteger(total) && total >= 0 ? total : 0,
     payment_method: order.payment_method == null ? null : String(order.payment_method),
@@ -132,8 +133,11 @@ export async function listCreatedBetween(fromInclusive, toExclusive, maxRows = 2
 }
 
 // One signed-in person's own orders, newest first.
-export async function listForCustomer(userId, limit = 100) {
-  return orders(await rest(`orders?select=data&customer_user_id=eq.${encodeURIComponent(String(userId))}&order=created_at.desc&limit=${Number(limit)}`));
+export async function listForCustomer(userId, email, limit = 100) {
+  const identity = email
+    ? `or=${encodeURIComponent(`(customer_user_id.eq.${String(userId)},customer_email.eq.${String(email).trim().toLowerCase()})`)}`
+    : `customer_user_id=eq.${encodeURIComponent(String(userId))}`;
+  return orders(await rest(`orders?select=data&${identity}&order=created_at.desc&limit=${Number(limit)}`));
 }
 
 // Saves a NEW order. Returns false (and changes nothing) if that order ID already exists.

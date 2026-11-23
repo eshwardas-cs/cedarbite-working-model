@@ -7,11 +7,19 @@ import * as walletStore from "../../shared/wallet-store.mjs";
 import * as notifications from "../../shared/notifications.mjs";
 import { isCanteenOpenNow, isPickupSlotWindowOpen, listPickupWindows, validScheduledPickupWindow } from "../../shared/pickup-window-validation.mjs";
 
-const store = getStore({
-  name: "cedarbite-shared-pilot",
-  region: "ap-southeast-1",
-  consistency: "strong",
-});
+// Open the Blobs store on EVERY request, never once at start-up. Netlify hands each request a
+// short-lived access token; a store created once keeps the first token, and because the function
+// stays warm (staff screens poll every few seconds) that token expires and every read then fails
+// with "Failed to decode token: Token expired" (401). Each request handles one call at a time,
+// so resetting this at the start of the handler is safe.
+let store;
+function openStore() {
+  return getStore({
+    name: "cedarbite-shared-pilot",
+    region: "ap-southeast-1",
+    consistency: "strong",
+  });
+}
 
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store, max-age=0, must-revalidate" };
 const reply = (body, status = 200, extraHeaders = {}) => new Response(JSON.stringify(body), { status, headers: { ...headers, ...extraHeaders } });
@@ -377,6 +385,7 @@ function priceSharedOrderLines(catalog, lines, mode) {
 const orderDb = orderStore;
 
 export default async (request) => {
+  store = openStore();
   let operation = request.method === "GET" ? "load shared canteen data" : "save shared canteen data";
   try {
     const url = new URL(request.url);
@@ -393,9 +402,9 @@ export default async (request) => {
       if (url.searchParams.get("scope") === "my-orders") {
         // Only the signed-in person's own orders.
         const customer = await customerAuth.customerFromRequest(request);
-        const orders = (await orderDb.listForCustomer(customer.user_id, MAX_ORDERS_PER_CUSTOMER))
-          .filter((order) => order.customer_user_id === customer.user_id)
-          .map((order) => ({ ...forStudent(order, customer.role === "student", true), customer_type: customer.role === "student" ? "STUDENT" : "TEACHER", customer_name: order.customer_name || customer.full_name || null, student_id: customer.role === "student" ? customer.student_id : null }));
+        const orders = (await orderDb.listForCustomer(customer.user_id, customer.email, MAX_ORDERS_PER_CUSTOMER))
+          .filter((order) => order.customer_user_id === customer.user_id || String(order.customer_email ?? "").trim().toLowerCase() === customer.email)
+          .map((order) => ({ ...forStudent(order, customer.role === "student", true), customer_type: customer.role === "student" ? "STUDENT" : "TEACHER", customer_name: customer.full_name || order.customer_name || null, student_id: customer.role === "student" ? customer.student_id : null }));
         return reply({ orders });
       }
       if (url.searchParams.get("scope") === "ordering-status") {
@@ -715,7 +724,7 @@ export default async (request) => {
       if (order.status === "CANCELLED") return reply({ order: forStudent(order, customer.role === "student", true), duplicate: true });
       const tooLate = "The canteen has already accepted this order, so it can no longer be cancelled. Please speak to the counter.";
       if (order.status !== "SUBMITTED") return reply({ error: tooLate }, 409);
-      if (order.payment_status === "PAID") return reply({ error: "This order has already been paid at the cash desk. Please speak to the counter to cancel it." }, 409);
+      if (order.payment_status === "PAID") return reply({ error: order.payment_method === "wallet" ? "This order was paid from your CedarBite wallet. Please speak to the counter to cancel it; the amount will be returned to your wallet." : "This order has already been paid at the cash desk. Please speak to the counter to cancel it." }, 409);
       const cancelled = { ...order, status: "CANCELLED", cancelled_at: new Date().toISOString(), cancelled_by: "customer" };
       // Only saves if the order is STILL "submitted": if the kitchen accepted it a moment ago, the kitchen wins.
       const saved = await orderDb.updateOrder(cancelled, { expectedStatus: "SUBMITTED" });
@@ -741,12 +750,13 @@ export default async (request) => {
       const customerType = order.customer_type ?? "STUDENT";
       const studentId = order.student_id == null ? null : String(order.student_id);
       const customerName = typeof order.customer_name === "string" ? order.customer_name.trim() : "";
-      if (!new Set(["STUDENT", "TEACHER", "GUEST", "NON_STUDENT"]).has(customerType)) return reply({ error: "Choose whether the order is for a student or teacher/guest." }, 400);
+      if (!new Set(["STUDENT", "TEACHER", "GUEST", "NON_STUDENT"]).has(customerType)) return reply({ error: "Choose whether the order is for a student, teacher, or guest." }, 400);
       if (customerType === "STUDENT" && !/^\d{7}$/.test(studentId ?? "")) return reply({ error: "Student ID must contain seven digits." }, 400);
       if ((customerType === "TEACHER" || customerType === "GUEST" || customerType === "NON_STUDENT") && (!customerName || customerName.length > 100)) return reply({ error: `Enter the ${customerType === "GUEST" ? "guest’s" : customerType === "NON_STUDENT" ? "teacher or guest" : "teacher’s"} name (up to 100 characters).` }, 400);
       let studentProfile = customerType === "STUDENT"
         ? await customerAuth.studentProfileFromId(studentId, { allowCounterName: true, allowMissingName: true })
         : null;
+      const teacherIdentity = customerType === "TEACHER" ? await customerAuth.teacherIdentityFromName(customerName, request.headers.get("x-canteen-username") || "counter") : null;
       if (customerType === "STUDENT" && !studentProfile?.full_name && (!customerName || customerName.length > 100)) return reply({ error: "Verify the student ID and enter the student’s name to place this in-person order." }, 400);
       if (!Array.isArray(order.items) || order.items.length < 1 || order.items.length > 30 || order.items.some((item) => typeof item.name !== "string" || item.name.length > 120 || !Number.isSafeInteger(item.item_id) || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20 || (item.unit_price_paisa != null && (!Number.isSafeInteger(item.unit_price_paisa) || item.unit_price_paisa < 0)) || (item.addon_selected != null && typeof item.addon_selected !== "boolean") || (item.option_id != null && (typeof item.option_id !== "string" || item.option_id.length > 36)))) return reply({ error: "Order items are invalid." }, 400);
       const method = order.payment_method === "wallet" ? "wallet" : "cash";
@@ -767,7 +777,12 @@ export default async (request) => {
       if (customerType === "STUDENT" && !studentProfile?.full_name) {
         studentProfile = await customerAuth.saveCounterStudentName(studentId, customerName, request.headers.get("x-canteen-username") || "counter");
       }
-      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "STUDENT" ? studentProfile?.full_name ?? customerName : customerName, student_id: customerType === "STUDENT" ? studentId : null, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
+      const identity = customerType === "STUDENT"
+        ? { customer_email: studentProfile?.email ?? `${studentId}@cedar.edu.pk`, customer_user_id: studentProfile?.user_id ?? null }
+        : teacherIdentity
+          ? { customer_email: teacherIdentity.email, customer_user_id: teacherIdentity.user_id }
+          : { customer_email: null, customer_user_id: null };
+      const saved = { id: order.id, status: "SUBMITTED", mode: order.mode, source: "COUNTER", total_paisa: pricedOrder.total_paisa, total_display: pricedOrder.total_display, pickup_code: order.pickup_code, created_at: new Date().toISOString(), pickup_window: order.pickup_window ?? null, items: pricedOrder.items, waiting_minutes: 0, customer_type: customerType, customer_name: customerType === "STUDENT" ? studentProfile?.full_name ?? customerName : teacherIdentity?.full_name ?? customerName, student_id: customerType === "STUDENT" ? studentId : null, ...identity, payment_method: method, payment_status: method === "cash" ? "UNPAID" : "PENDING" };
       const created = await orderDb.createOrderAtomic(saved, request.headers.get("x-canteen-username") || "counter");
       return reply({ order: created.order, duplicate: created.duplicate }, created.duplicate ? 200 : 201);
     }

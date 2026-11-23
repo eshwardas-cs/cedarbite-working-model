@@ -6,6 +6,17 @@ export default defineConfig({
   build: {
     outDir: "../backend/app/web",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("/node_modules/")) return;
+          if (id.includes("/react-dom/") || id.includes("/scheduler/")) return "react-runtime";
+          if (id.includes("/react/")) return "react-runtime";
+          if (id.includes("/@supabase/")) return "supabase-client";
+        },
+      },
+    },
   },
   server: {
     proxy: {
