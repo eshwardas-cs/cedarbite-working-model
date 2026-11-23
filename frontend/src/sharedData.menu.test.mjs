@@ -85,6 +85,7 @@ beforeEach(() => {
   mockStore.values.clear();
   mockStore.setJSON.mockClear();
   customer.customerFromRequest.mockClear();
+  customer.teacherIdentityFromName.mockClear();
   orderDb.reset();
   for (const fn of ["readCatalog", "setAvailability", "setPrice", "removeItem", "addItem", "updateItem", "addCategory", "removeCategory", "reorderMenu"]) menu[fn].mockClear();
 });
@@ -277,13 +278,14 @@ describe("counter order customer identity", () => {
   });
 
   it("saves teacher and guest orders with distinct types and only links the teacher account", async () => {
+    customer.teacherIdentityFromName.mockResolvedValueOnce({ full_name: "Adam Asif", email: "adam.asif@cedar.edu.pk", user_id: null, profile_exists: false });
     const teacherResponse = await counterOrder("counter-teacher-order", "CB12AB35", {
       customer_type: "TEACHER",
-      customer_name: "Adam Asif",
+      customer_name: "Adam",
     });
     const guestResponse = await counterOrder("counter-guest-order", "CB12AB36", {
       customer_type: "GUEST",
-      customer_name: "Visitor Name",
+      customer_name: "Adam",
     });
 
     expect(teacherResponse.status).toBe(201);
@@ -294,8 +296,10 @@ describe("counter order customer identity", () => {
       customer_name: "Adam Asif",
     });
     expect(guestResponse.status).toBe(201);
-    expect(orderDb.rows.get("counter-guest-order")).toMatchObject({ customer_type: "GUEST", customer_name: "Visitor Name" });
+    expect(orderDb.rows.get("counter-guest-order")).toMatchObject({ customer_type: "GUEST", customer_name: "Adam" });
     expect(orderDb.rows.get("counter-guest-order")).toHaveProperty("customer_email", null);
+    expect(customer.teacherIdentityFromName).toHaveBeenCalledTimes(1);
+    expect(customer.teacherIdentityFromName).toHaveBeenCalledWith("Adam", "counter");
   });
 });
 

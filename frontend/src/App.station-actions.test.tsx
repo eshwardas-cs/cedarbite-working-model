@@ -105,17 +105,25 @@ describe("cash desk and order workflow actions", () => {
     setStationSession("/counter", "order_taker", ["counter.orders.create"]);
     render(<App/>);
 
-    const customerType = await screen.findByRole("combobox", { name: "Order placed for" });
-    expect(customerType).toHaveDisplayValue("Student");
-    expect(screen.getByRole("option", { name: "Teacher" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Guest" })).toBeInTheDocument();
+    const studentChoice = await screen.findByRole("radio", { name: "Student" });
+    const teacherChoice = screen.getByRole("radio", { name: "Teacher" });
+    const guestChoice = screen.getByRole("radio", { name: "Guest" });
+    expect(studentChoice).toBeChecked();
 
-    fireEvent.change(customerType, { target: { value: "TEACHER" } });
-    expect(await screen.findByPlaceholderText("Search the Cedar teacher list")).toBeInTheDocument();
+    fireEvent.click(teacherChoice);
+    const teacherInput = await screen.findByPlaceholderText("Search the Cedar teacher list");
+    expect(teacherInput).toBeInTheDocument();
+    expect(teacherChoice).toBeChecked();
     expect(document.getElementById("cedar-counter-teachers")?.querySelector('option[value="Adam Asif"]')).not.toBeNull();
+    fireEvent.change(teacherInput, { target: { value: "Adam" } });
 
-    fireEvent.change(customerType, { target: { value: "GUEST" } });
-    expect(await screen.findByPlaceholderText("Enter guest name")).toBeInTheDocument();
+    fireEvent.click(guestChoice);
+    const guestInput = await screen.findByPlaceholderText("Enter guest name");
+    expect(guestInput).toBeInTheDocument();
+    expect(guestChoice).toBeChecked();
+    expect(guestInput).toHaveValue("");
+    fireEvent.change(guestInput, { target: { value: "Adam" } });
+    expect(guestInput).toHaveValue("Adam");
   });
 
   it("records cash received and removes that order from the unpaid cash list", async () => {
